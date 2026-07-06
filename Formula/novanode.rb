@@ -16,7 +16,10 @@ class Novanode < Formula
       exec "#{libexec}/bin/nn-usage" "$@"
     SH
 
-    bin.install_symlink "nn-usage" => "novanode"
+    (bin/"novanode").write <<~SH
+      #!/bin/bash
+      exec "#{libexec}/bin/novanode" "$@"
+    SH
   end
 
   test do

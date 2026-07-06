@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+
+VERSION="1.0.3"
+
+case "${1:-}" in
+  -h|--help)
+    cat << EOF
+NovaNode ${VERSION}
+
+AI token usage status CLI for Claude, Codex and Cursor.
+
+Commands:
+  novanode          Show package info
+  novanode --help   Show this help
+  novanode --version
+  nn-usage          Show AI usage dashboard
+EOF
+    exit 0
+    ;;
+  -v|--version)
+    echo "$VERSION"
+    exit 0
+    ;;
+  "")
+    ;;
+  *)
+    echo "Unknown option: $1" >&2
+    echo "Run 'novanode --help' for usage." >&2
+    exit 2
+    ;;
+esac
+
+cat << EOF
+NovaNode ${VERSION}
+AI token usage status CLI
+
+Package: @nakdev-npm/novanode
+Commands:
+  novanode  Package info
+  nn-usage  Claude, Codex and Cursor usage dashboard
+EOF
