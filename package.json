@@ -1,5 +1,5 @@
 {
-  "name": "@nachogonzalez/novanode",
+  "name": "@nakdev-npm/novanode",
   "version": "1.0.0",
   "description": "AI token usage status CLI for Claude, Codex and Cursor",
   "license": "MIT",
