@@ -9,15 +9,18 @@ Ships as a single Bash executable exposed as `nn-usage`.
 ### Homebrew (macOS, recommended)
 
 ```sh
-brew tap nachogonz/tap
+brew tap nachogonz/novanode-resgistry https://github.com/nachogonz/novanode-resgistry
 brew install novanode
 ```
 
-Or in one line:
+After tapping, you can also install with the fully qualified formula name:
 
 ```sh
-brew install nachogonz/tap/novanode
+brew install nachogonz/novanode-resgistry/novanode
 ```
+
+If `brew install novanode` says no formula is available, the tap has not been
+installed yet. Run the `brew tap` command above first.
 
 ### npm (global)
 
@@ -50,12 +53,11 @@ git push --tags
 ```
 
 The `release.yml` workflow publishes to npm on tag push. After the tag lands
-on GitHub, update the Homebrew formula in
-[`nachogonz/homebrew-tap`](https://github.com/nachogonz/homebrew-tap) with the
-new `url` and `sha256`:
+on GitHub, update [`Formula/novanode.rb`](./Formula/novanode.rb) with the new
+`url` and `sha256`:
 
 ```sh
-curl -L https://github.com/nachogonz/novanode/archive/refs/tags/vX.Y.Z.tar.gz \
+curl -L https://github.com/nachogonz/novanode-resgistry/archive/refs/tags/vX.Y.Z.tar.gz \
   | shasum -a 256
 ```
 

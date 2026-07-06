@@ -4,13 +4,13 @@
   "description": "AI token usage status CLI for Claude, Codex and Cursor",
   "license": "MIT",
   "author": "Nacho Gonzalez <nachogonzalez.dev@gmail.com>",
-  "homepage": "https://github.com/nachogonz/novanode#readme",
+  "homepage": "https://github.com/nachogonz/novanode-resgistry#readme",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/nachogonz/novanode.git"
+    "url": "git+https://github.com/nachogonz/novanode-resgistry.git"
   },
   "bugs": {
-    "url": "https://github.com/nachogonz/novanode/issues"
+    "url": "https://github.com/nachogonz/novanode-resgistry/issues"
   },
   "keywords": [
     "cli",
