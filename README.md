@@ -2,7 +2,7 @@
 
 AI token usage status CLI for **Claude**, **Codex**, and **Cursor**.
 
-Ships `novanode` for package info and `nn-usage` for the AI usage dashboard.
+Ships `novanode` as an AI terminal hub and `nn-usage` as the usage dashboard.
 
 ## Install
 
@@ -33,7 +33,7 @@ Both channels install `novanode` and `nn-usage` onto your `PATH`.
 ## Usage
 
 ```sh
-novanode  # package info
+novanode  # AI provider hub
 nn-usage  # AI usage dashboard
 ```
 

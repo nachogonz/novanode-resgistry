@@ -1,25 +1,334 @@
 #!/usr/bin/env bash
 
-VERSION="1.0.3"
+VERSION="1.0.4"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+NN_USAGE="${SCRIPT_DIR}/nn-usage"
+
+ORANGE=$'\033[38;5;208m'
+GREEN=$'\033[38;5;82m'
+DIM=$'\033[38;5;245m'
+BOLD=$'\033[1m'
+RESET=$'\033[0m'
+
+usage() {
+  cat << EOF
+NovaNode
+
+AI terminal hub for Claude, Codex and Cursor.
+
+Usage:
+  novanode
+  novanode --help
+  novanode --version
+  novanode claude
+  novanode codex
+  novanode cursor
+
+Inside NovaNode:
+  /use claude|codex|cursor  Select provider
+  /open                     Open selected provider CLI
+  /usage                    Refresh usage summary
+  /providers                Show providers
+  /quit                     Exit
+EOF
+}
+
+provider_cmd() {
+  case "$1" in
+    claude) echo "claude" ;;
+    codex) echo "codex" ;;
+    cursor) echo "cursor" ;;
+  esac
+}
+
+provider_label() {
+  case "$1" in
+    claude) echo "Claude Code" ;;
+    codex) echo "Codex CLI" ;;
+    cursor) echo "Cursor" ;;
+  esac
+}
+
+exec_provider() {
+  local provider="$1"
+  local cmd
+  cmd="$(provider_cmd "$provider")"
+  if ! command -v "$cmd" >/dev/null 2>&1; then
+    echo "NovaNode: ${cmd} is not installed or not on PATH." >&2
+    return 127
+  fi
+  if [ "$provider" = "cursor" ]; then
+    exec "$cmd" --chat
+  fi
+  exec "$cmd"
+}
+
+send_prompt() {
+  local provider="$1"
+  local prompt="$2"
+  local cmd
+  cmd="$(provider_cmd "$provider")"
+  if ! command -v "$cmd" >/dev/null 2>&1; then
+    echo "NovaNode: ${cmd} is not installed or not on PATH." >&2
+    return 127
+  fi
+
+  case "$provider" in
+    claude|codex)
+      "$cmd" "$prompt"
+      ;;
+    cursor)
+      echo "NovaNode: Cursor CLI does not expose a stable terminal chat prompt."
+      echo "Opening Cursor Chat instead."
+      "$cmd" --chat
+      ;;
+  esac
+}
+
+append_prefixed() {
+  local prefix="$1"
+  local file="$2"
+  if [ ! -s "$file" ]; then
+    printf "%s: No response captured.\n" "$prefix"
+    return 0
+  fi
+
+  while IFS= read -r line; do
+    if [ -n "$line" ]; then
+      printf "%s: %s\n" "$prefix" "$line"
+    fi
+  done < "$file"
+}
+
+run_prompt() {
+  local provider="$1"
+  local prompt="$2"
+  local transcript_file="$3"
+  local cmd output status
+
+  cmd="$(provider_cmd "$provider")"
+  if ! command -v "$cmd" >/dev/null 2>&1; then
+    printf "NovaNode: %s is not installed or not on PATH.\n" "$cmd" >> "$transcript_file"
+    return 127
+  fi
+
+  output=$(mktemp "${TMPDIR:-/tmp}/novanode-response.XXXXXX")
+  case "$provider" in
+    claude)
+      "$cmd" --print "$prompt" >"$output" 2>&1
+      status=$?
+      ;;
+    codex)
+      "$cmd" exec --color never --output-last-message "$output" "$prompt" >/dev/null 2>>"$output"
+      status=$?
+      ;;
+    cursor)
+      printf "NovaNode: Cursor CLI does not expose terminal chat responses. Use /open to launch Cursor Chat.\n" >> "$transcript_file"
+      rm -f "$output"
+      return 0
+      ;;
+  esac
+
+  if [ "$status" -ne 0 ]; then
+    printf "NovaNode: %s exited with status %s.\n" "$provider" "$status" >> "$transcript_file"
+  fi
+  append_prefixed "$(provider_label "$provider")" "$output" >> "$transcript_file"
+  rm -f "$output"
+  return "$status"
+}
+
+load_usage() {
+  if [ ! -x "$NN_USAGE" ]; then
+    echo ""
+    return 0
+  fi
+  AI_USAGE_NO_REFRESH_PROMPT=1 "$NN_USAGE" --summary-tsv </dev/null 2>/dev/null || true
+}
+
+render_screen() {
+  local active="$1"
+  local data="$2"
+  local transcript_file="$3"
+  python3 - "$active" "$data" "$transcript_file" << 'PYEOF'
+import os, re, shutil, sys, textwrap
+
+active = sys.argv[1]
+raw = sys.argv[2]
+transcript_file = sys.argv[3]
+size = shutil.get_terminal_size((106, 34))
+width = max(80, size.columns)
+height = max(24, size.lines)
+
+ORANGE = "\033[38;5;208m"
+GREEN = "\033[38;5;82m"
+DIM = "\033[38;5;245m"
+BOLD = "\033[1m"
+RESET = "\033[0m"
+
+providers = []
+
+def fmt_pct(value):
+    if value in ("", "n/a", "stale"):
+        return value or "n/a"
+    return f"{value}%"
+
+def strip_ansi(text):
+    return re.sub(r"\033\[[0-9;]*m", "", text)
+
+def fit(text, limit):
+    plain = strip_ansi(text)
+    if len(plain) <= limit:
+        return text + " " * (limit - len(plain))
+    out = []
+    visible = 0
+    i = 0
+    while i < len(text) and visible < limit - 1:
+        if text[i] == "\033":
+            end = text.find("m", i)
+            if end == -1:
+                break
+            out.append(text[i:end + 1])
+            i = end + 1
+            continue
+        out.append(text[i])
+        visible += 1
+        i += 1
+    out.append("…")
+    out.append(RESET)
+    return "".join(out)
+
+def pct_number(value):
+    try:
+        return float(str(value).replace("%", "").strip())
+    except Exception:
+        return None
+
+def mini_bar(left, used, width=18):
+    basis = pct_number(left)
+    if basis is None:
+        basis = 100 - pct_number(used) if pct_number(used) is not None else None
+    if basis is None:
+        return f"{DIM}{'░' * width}{RESET}"
+    fill = round(max(0, min(basis, 100)) / 100 * width)
+    return f"{GREEN}{'█' * fill}{DIM}{'░' * (width - fill)}{RESET}"
+
+def box_top(title, w):
+    label = f" {title} "
+    return f"{ORANGE}╭─{label}{'─' * max(0, w - len(label) - 3)}╮{RESET}"
+
+def box_mid(text, w):
+    return f"{ORANGE}│{RESET} {fit(text, w - 4)} {ORANGE}│{RESET}"
+
+def box_bottom(w):
+    return f"{ORANGE}╰{'─' * (w - 2)}╯{RESET}"
+
+for line in raw.splitlines():
+    cols = line.split("\t")
+    if len(cols) < 11:
+        continue
+    key, command, version, p1, used1, left1, reset1, p2, used2, left2, reset2 = cols[:11]
+    name = {"claude": "Claude Code", "codex": "Codex CLI", "cursor": "Cursor"}.get(key, key)
+    providers.append({
+        "key": key,
+        "command": command,
+        "name": name,
+        "version": f"v{version}" if version != "n/a" else "not detected",
+        "p1": p1,
+        "used1": used1,
+        "left1": left1,
+        "reset1": reset1,
+        "p2": p2,
+        "used2": used2,
+        "left2": left2,
+        "reset2": reset2,
+    })
+
+messages = []
+try:
+    with open(transcript_file) as fh:
+        messages = [line.rstrip("\n") for line in fh if line.strip()]
+except Exception:
+    pass
+
+left_w = max(38, min(46, (width * 2) // 5))
+gap = 2
+right_w = width - left_w - gap
+body_h = max(12, height - 9)
+
+left_lines = []
+if not providers:
+    left_lines.extend([
+        f"{DIM}Usage unavailable.{RESET}",
+        f"{DIM}Run nn-usage to refresh provider state.{RESET}",
+    ])
+else:
+    for p in providers:
+        selected = p["key"] == active
+        bullet = "●" if selected else " "
+        tone = GREEN if selected else DIM
+        left_lines.append(f"{tone}{bullet} {p['name']}{RESET}")
+        left_lines.append(f"  {DIM}{p['version']} · `{p['command']}`{RESET}")
+        left_lines.append(f"  {p['p1']:<8} {mini_bar(p['left1'], p['used1'], 12)} {fmt_pct(p['left1'])} left")
+        left_lines.append(f"  {DIM}{fmt_pct(p['used1'])} used · {p['reset1']}{RESET}")
+        left_lines.append(f"  {p['p2']:<8} {mini_bar(p['left2'], p['used2'], 12)} {fmt_pct(p['left2'])} left")
+        left_lines.append(f"  {DIM}{fmt_pct(p['used2'])} used · {p['reset2']}{RESET}")
+        left_lines.append("")
+
+active_name = next((p["name"] for p in providers if p["key"] == active), active.title())
+right_lines = [
+    f"{BOLD}{GREEN}{active_name} chat lane{RESET}",
+    f"{DIM}Type here. NovaNode captures the response back into this panel.{RESET}",
+    "",
+]
+if messages:
+    for msg in messages[-max(4, body_h - 6):]:
+        wrapped = textwrap.wrap(strip_ansi(msg), max(24, right_w - 6)) or [""]
+        for item in wrapped:
+            if msg.startswith("You:"):
+                right_lines.append(f"{GREEN}{item}{RESET}")
+            elif msg.startswith("NovaNode:"):
+                right_lines.append(f"{ORANGE}{item}{RESET}")
+            else:
+                right_lines.append(f"{DIM}{item}{RESET}")
+else:
+    right_lines.extend([
+        f"{DIM}No messages yet.{RESET}",
+        f"{DIM}Start with a prompt, or switch models with /use codex.{RESET}",
+    ])
+
+print("\033[3J\033[H\033[2J", end="")
+print(box_top("NovaNode · AI Terminal", width))
+print(box_mid(f"{BOLD}{GREEN}One terminal, three providers, usage visible before every prompt.{RESET}", width))
+print(box_mid(f"{DIM}/use claude · /use codex · /use cursor · /open · /usage · /quit{RESET}", width))
+print(box_bottom(width))
+print()
+
+left_title = box_top("Models", left_w)
+right_title = box_top("Chat", right_w)
+print(left_title + " " * gap + right_title)
+for i in range(body_h):
+    l = left_lines[i] if i < len(left_lines) else ""
+    r = right_lines[i] if i < len(right_lines) else ""
+    print(box_mid(l, left_w) + " " * gap + box_mid(r, right_w))
+print(box_bottom(left_w) + " " * gap + box_bottom(right_w))
+print()
+print(box_top("Input", width))
+print(box_mid(f"{DIM}selected:{RESET} {GREEN}{active}{RESET}  {DIM}press enter after your prompt; /help for commands{RESET}", width))
+print(box_bottom(width))
+PYEOF
+}
 
 case "${1:-}" in
   -h|--help)
-    cat << EOF
-NovaNode ${VERSION}
-
-AI token usage status CLI for Claude, Codex and Cursor.
-
-Commands:
-  novanode          Show package info
-  novanode --help   Show this help
-  novanode --version
-  nn-usage          Show AI usage dashboard
-EOF
+    usage
     exit 0
     ;;
   -v|--version)
     echo "$VERSION"
     exit 0
+    ;;
+  claude|codex|cursor)
+    exec_provider "$1"
     ;;
   "")
     ;;
@@ -30,12 +339,66 @@ EOF
     ;;
 esac
 
-cat << EOF
-NovaNode ${VERSION}
-AI token usage status CLI
+active_provider="claude"
+usage_data="$(load_usage)"
+TRANSCRIPT_FILE=$(mktemp "${TMPDIR:-/tmp}/novanode-chat.XXXXXX")
+trap 'rm -f "$TRANSCRIPT_FILE" 2>/dev/null' EXIT
 
-Package: @nakdev-npm/novanode
-Commands:
-  novanode  Package info
-  nn-usage  Claude, Codex and Cursor usage dashboard
-EOF
+render_screen "$active_provider" "$usage_data" "$TRANSCRIPT_FILE"
+
+while true; do
+  printf "%snovanode%s:%s%s%s> " "$ORANGE" "$RESET" "$GREEN" "$active_provider" "$RESET"
+  IFS= read -r input || break
+
+  case "$input" in
+    "")
+      continue
+      ;;
+    /q|/quit|exit)
+      break
+      ;;
+    /h|/help)
+      printf "NovaNode: opened help for commands.\n" >> "$TRANSCRIPT_FILE"
+      usage
+      ;;
+    /providers)
+      printf "NovaNode: refreshed provider view.\n" >> "$TRANSCRIPT_FILE"
+      render_screen "$active_provider" "$usage_data" "$TRANSCRIPT_FILE"
+      ;;
+    /usage)
+      usage_data="$(load_usage)"
+      printf "NovaNode: refreshed usage snapshot.\n" >> "$TRANSCRIPT_FILE"
+      render_screen "$active_provider" "$usage_data" "$TRANSCRIPT_FILE"
+      ;;
+    /open)
+      printf "NovaNode: opening native %s interface.\n" "$active_provider" >> "$TRANSCRIPT_FILE"
+      exec_provider "$active_provider"
+      ;;
+    /use\ *)
+      next="${input#/use }"
+      case "$next" in
+        claude|codex|cursor)
+          active_provider="$next"
+          printf "NovaNode: switched provider to %s.\n" "$active_provider" >> "$TRANSCRIPT_FILE"
+          render_screen "$active_provider" "$usage_data" "$TRANSCRIPT_FILE"
+          ;;
+        *)
+          printf "NovaNode: invalid provider '%s'.\n" "$next" >> "$TRANSCRIPT_FILE"
+          echo "Choose claude, codex or cursor."
+          ;;
+      esac
+      ;;
+    /*)
+      printf "NovaNode: unknown command '%s'.\n" "$input" >> "$TRANSCRIPT_FILE"
+      echo "Unknown command. Run /help."
+      ;;
+    *)
+      printf "You: [%s] %s\n" "$active_provider" "$input" >> "$TRANSCRIPT_FILE"
+      printf "NovaNode: %s is thinking...\n" "$active_provider" >> "$TRANSCRIPT_FILE"
+      render_screen "$active_provider" "$usage_data" "$TRANSCRIPT_FILE"
+      run_prompt "$active_provider" "$input" "$TRANSCRIPT_FILE"
+      usage_data="$(load_usage)"
+      render_screen "$active_provider" "$usage_data" "$TRANSCRIPT_FILE"
+      ;;
+  esac
+done

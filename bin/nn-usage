@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 
-VERSION="1.0.3"
+VERSION="1.0.4"
+SUMMARY_TSV=0
 
 usage() {
   cat << EOF
@@ -30,6 +31,9 @@ case "${1:-}" in
   -v|--version)
     echo "$VERSION"
     exit 0
+    ;;
+  --summary-tsv)
+    SUMMARY_TSV=1
     ;;
   "")
     ;;
@@ -140,7 +144,9 @@ stop_loading() {
 
 trap 'stop_loading; rm -f "$CLAUDE_TMP" "$CURSOR_TMP" "$CODEX_TMP" 2>/dev/null' EXIT
 
-start_loading
+if [ "$SUMMARY_TSV" != "1" ]; then
+  start_loading
+fi
 
 CLAUDE_STATUSLINE_INPUT=""
 if [ ! -t 0 ]; then
@@ -814,6 +820,68 @@ CX7_TB=$(table_bar "$(num_or_zero "$CX7_PCT")")
 CA_TB=$(table_bar "$(num_or_zero "$CURSOR_AUTO_PCT")")
 CP_TB=$(table_bar "$(num_or_zero "$CURSOR_PREM_PCT")")
 CT_TB=$(table_bar "$(num_or_zero "$CURSOR_TOTAL_PCT")")
+
+if [ "$SUMMARY_TSV" = "1" ]; then
+  python3 << PYEOF
+def left(value):
+    try:
+        cleaned = str(value).strip().replace("%", "")
+        remaining = max(0, round(100 - float(cleaned), 1))
+        return f"{remaining:g}"
+    except Exception:
+        return "n/a"
+
+def clean(value):
+    value = str(value or "").strip()
+    return value if value else "n/a"
+
+rows = [
+    [
+        "claude",
+        "claude",
+        clean("""${CVER}"""),
+        "Session",
+        clean("""${CLAUDE_5H_PCT}"""),
+        left("""${CLAUDE_5H_PCT}"""),
+        clean("""${CLAUDE_5H_RESET}"""),
+        "Weekly",
+        clean("""${CLAUDE_WEEK_PCT}"""),
+        left("""${CLAUDE_WEEK_PCT}"""),
+        clean("""${CLAUDE_WEEK_RESET}"""),
+    ],
+    [
+        "codex",
+        "codex",
+        clean("""${CXVER}"""),
+        clean("""${CX5_LABEL}"""),
+        clean("""${CX5_PCT}"""),
+        left("""${CX5_PCT}"""),
+        clean("""${CX5_RESET}"""),
+        clean("""${CX7_LABEL}"""),
+        clean("""${CX7_PCT}"""),
+        left("""${CX7_PCT}"""),
+        clean("""${CX7_RESET}"""),
+    ],
+    [
+        "cursor",
+        "cursor",
+        clean("""${CURSOR_VER}"""),
+        "Auto",
+        clean("""${CURSOR_AUTO_PCT}"""),
+        left("""${CURSOR_AUTO_PCT}"""),
+        clean("""${CURSOR_CYCLE_END}"""),
+        "Premium",
+        clean("""${CURSOR_PREM_PCT}"""),
+        left("""${CURSOR_PREM_PCT}"""),
+        clean("""${CURSOR_CYCLE_END}"""),
+    ],
+]
+
+for row in rows:
+    print("\t".join(row))
+PYEOF
+  exit 0
+fi
 
 # ─── Render ───────────────────────────────────────────────────────────────────
 DISPLAY_NAME="${CURSOR_NAME:-User}"
