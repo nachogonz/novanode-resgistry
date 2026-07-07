@@ -8,6 +8,9 @@ WORKSPACE_DIR="$(pwd)"
 ORANGE=$'\033[38;5;208m'
 GREEN=$'\033[38;5;82m'
 RED=$'\033[38;5;196m'
+CYAN=$'\033[38;5;51m'
+WHITE=$'\033[38;2;249;249;249m'
+GRAY_BG=$'\033[48;5;237m'
 DIM=$'\033[38;5;245m'
 BOLD=$'\033[1m'
 RESET=$'\033[0m'
@@ -103,6 +106,239 @@ append_prefixed() {
       printf "%s: %s\n" "$prefix" "$line"
     fi
   done < "$file"
+}
+
+parse_prompt_assets() {
+  local prompt="$1"
+  local prompt_file="$2"
+  local images_file="$3"
+  python3 - "$prompt" "$prompt_file" "$images_file" << 'PYEOF'
+import os, shlex, sys
+
+prompt, prompt_file, images_file = sys.argv[1:4]
+image_exts = (".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".tiff", ".heic")
+image_re = r"(?:~|/)[^\n]*?\.(?:png|jpe?g|webp|gif|bmp|tiff|heic)"
+
+def clean_paste_markers(text):
+    return text.replace("\x1b[200~", "").replace("\x1b[201~", "").replace("[200~", "").replace("[201~", "")
+
+def image_paths_from_prompt(text):
+    text = clean_paste_markers(text)
+    paths = []
+    index = 0
+    while index < len(text):
+        start_candidates = [pos for pos in (text.find("/", index), text.find("~", index)) if pos != -1]
+        if not start_candidates:
+            break
+        start = min(start_candidates)
+        best = None
+        lower = text.lower()
+        for ext in image_exts:
+            search = start
+            while True:
+                end = lower.find(ext, search)
+                if end == -1:
+                    break
+                candidate_end = end + len(ext)
+                candidate = os.path.expanduser(text[start:candidate_end].strip("\"' "))
+                if os.path.isfile(candidate):
+                    best = (start, candidate_end, candidate)
+                    break
+                search = end + 1
+            if best:
+                break
+        if best:
+            paths.append(((best[0], best[1]), best[2]))
+            index = best[1]
+        else:
+            index = start + 1
+    return paths
+
+prompt = clean_paste_markers(prompt)
+found = image_paths_from_prompt(prompt)
+images = [path for _, path in found]
+clean_prompt = prompt
+for span, path in reversed(found):
+    if span:
+        clean_prompt = clean_prompt[:span[0]] + clean_prompt[span[1]:]
+
+clean_prompt = " ".join(clean_prompt.split()).strip()
+if images and not clean_prompt:
+    clean_prompt = "Please inspect the attached image."
+
+with open(prompt_file, "w") as fh:
+    fh.write(clean_prompt or prompt)
+with open(images_file, "w") as fh:
+    for image in images:
+        fh.write(image + "\n")
+PYEOF
+}
+
+summarize_prompt_for_chat() {
+  local prompt="$1"
+  python3 - "$prompt" << 'PYEOF'
+import os, shlex, sys
+
+prompt = sys.argv[1]
+image_exts = (".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".tiff", ".heic")
+image_re = r"(?:~|/)[^\n]*?\.(?:png|jpe?g|webp|gif|bmp|tiff|heic)"
+
+def clean_paste_markers(text):
+    return text.replace("\x1b[200~", "").replace("\x1b[201~", "").replace("[200~", "").replace("[201~", "")
+
+def extract(text):
+    text = clean_paste_markers(text)
+    found = []
+    index = 0
+    while index < len(text):
+        start_candidates = [pos for pos in (text.find("/", index), text.find("~", index)) if pos != -1]
+        if not start_candidates:
+            break
+        start = min(start_candidates)
+        best = None
+        lower = text.lower()
+        for ext in image_exts:
+            search = start
+            while True:
+                end = lower.find(ext, search)
+                if end == -1:
+                    break
+                candidate_end = end + len(ext)
+                candidate = os.path.expanduser(text[start:candidate_end].strip("\"' "))
+                if os.path.isfile(candidate):
+                    best = (start, candidate_end, candidate)
+                    break
+                search = end + 1
+            if best:
+                break
+        if best:
+            found.append(((best[0], best[1]), best[2]))
+            index = best[1]
+        else:
+            index = start + 1
+    return found
+
+prompt = clean_paste_markers(prompt)
+found = extract(prompt)
+summary = prompt
+for span, _ in reversed(found):
+    summary = summary[:span[0]] + summary[span[1]:]
+summary = " ".join(summary.split()).strip()
+if found:
+    label = " ".join(f"[Image #{idx}]" for idx, _ in enumerate(found, 1))
+    summary = f"{label} {summary}".strip()
+print(summary or prompt)
+PYEOF
+}
+
+display_prompt_input() {
+  local prompt="$1"
+  python3 - "$prompt" << 'PYEOF'
+import os, re, shlex, sys
+
+prompt = sys.argv[1]
+image_exts = (".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".tiff", ".heic")
+prompt = prompt.replace("\x1b[200~", "").replace("\x1b[201~", "").replace("[200~", "").replace("[201~", "")
+prompt = re.sub(r"[\x00-\x08\x0b-\x1f\x7f-\x9f\ufffd]", "", prompt)
+prompt = re.sub(r"^\s*\?+\s*", "", prompt)
+
+def looks_like_pending_image_path(value):
+    lowered = value.lower()
+    return (
+        lowered.startswith("/var/folders/")
+        or lowered.startswith("/private/var/folders/")
+        or lowered.startswith("/private/tmp/")
+        or lowered.startswith("/tmp/")
+    ) and (
+        "temporaryitems" in lowered
+        or "tempora" in lowered
+        or "nsird_screencaptureui" in lowered
+        or "screenshot" in lowered
+        or (lowered.startswith("/var/folders/") and "/t/" in lowered)
+        or (lowered.startswith("/private/var/folders/") and "/t/" in lowered)
+        or any(token in lowered for token in (".png", ".jpg", ".jpeg", ".webp", ".gif", ".heic"))
+    )
+
+out = []
+last = 0
+image_count = 0
+index = 0
+lower = prompt.lower()
+while index < len(prompt):
+    start_candidates = [pos for pos in (prompt.find("/", index), prompt.find("~", index)) if pos != -1]
+    if not start_candidates:
+        break
+    start = min(start_candidates)
+    best = None
+    for ext in image_exts:
+        search = start
+        while True:
+            end = lower.find(ext, search)
+            if end == -1:
+                break
+            candidate_end = end + len(ext)
+            candidate = os.path.expanduser(prompt[start:candidate_end].strip("\"' "))
+            if os.path.isfile(candidate):
+                best = (start, candidate_end)
+                break
+            search = end + 1
+        if best:
+            break
+    if best:
+        out.append(prompt[last:best[0]])
+        image_count += 1
+        out.append(f"[Image #{image_count}]")
+        last = best[1]
+        index = best[1]
+    else:
+        index = start + 1
+out.append(prompt[last:])
+display = " ".join("".join(out).split()) if image_count else " ".join(prompt.split())
+if not image_count and looks_like_pending_image_path(display):
+    display = "[Image #1]"
+print(display)
+PYEOF
+}
+
+color_input_display() {
+  local text="$1"
+  python3 - "$text" "$CYAN" "$GREEN" "$RESET" << 'PYEOF'
+import re, sys
+
+text, cyan, green, reset = sys.argv[1:5]
+parts = re.split(r"(\[Image #[0-9]+\])", text)
+out = []
+for part in parts:
+    if re.fullmatch(r"\[Image #[0-9]+\]", part or ""):
+        out.append(cyan + part + green)
+    else:
+        out.append(part)
+print("".join(out), end="")
+PYEOF
+}
+
+usage_pct_for_provider() {
+  local provider="$1"
+  awk -F '\t' -v key="$provider" '$1 == key { print $5; exit }' <<< "$usage_data"
+}
+
+provider_exhausted() {
+  local provider="$1" pct
+  pct="$(usage_pct_for_provider "$provider")"
+  [[ "$pct" =~ ^[0-9]+([.][0-9]+)?$ ]] && awk -v pct="$pct" 'BEGIN { exit !(pct >= 100) }'
+}
+
+choose_default_provider() {
+  if provider_exhausted "$active_provider"; then
+    case "$active_provider" in
+      claude)
+        provider_exhausted codex || active_provider="codex"
+        ;;
+      codex)
+        provider_exhausted claude || active_provider="claude"
+        ;;
+    esac
+  fi
 }
 
 claude_stream_parser() {
@@ -230,7 +466,7 @@ run_prompt() {
   local prompt="$2"
   local transcript_file="$3"
   local approve="${4:-0}"
-  local cmd status
+  local cmd status prompt_tmp images_tmp image clean_prompt
 
   cmd="$(provider_cmd "$provider")"
   if ! command -v "$cmd" >/dev/null 2>&1; then
@@ -238,26 +474,39 @@ run_prompt() {
     return 127
   fi
 
+  prompt_tmp="$(mktemp "${TMPDIR:-/tmp}/novanode-prompt.XXXXXX")"
+  images_tmp="$(mktemp "${TMPDIR:-/tmp}/novanode-images.XXXXXX")"
+  parse_prompt_assets "$prompt" "$prompt_tmp" "$images_tmp"
+  clean_prompt="$(cat "$prompt_tmp")"
+
   case "$provider" in
     claude)
       local extra=(--print --verbose --output-format stream-json)
       [ "$approve" -eq 1 ] && extra+=(--permission-mode acceptEdits)
       [ -n "$model_claude" ] && extra+=(--model "$model_claude")
-      "$cmd" "${extra[@]}" "$prompt" 2>/dev/null | claude_stream_parser "$transcript_file"
+      if [ -s "$images_tmp" ]; then
+        clean_prompt="${clean_prompt}"$'\n\n'"Attached image path(s):"$'\n'"$(sed 's/^/- /' "$images_tmp")"
+      fi
+      "$cmd" "${extra[@]}" "$clean_prompt" 2>/dev/null | claude_stream_parser "$transcript_file"
       status=${PIPESTATUS[0]}
       ;;
     codex)
       local extra=(exec --color never)
       [ "$approve" -eq 1 ] && extra+=(--full-auto)
       [ -n "$model_codex" ] && extra+=(--model "$model_codex")
-      "$cmd" "${extra[@]}" "$prompt" 2>&1 | codex_stream_parser "$transcript_file"
+      while IFS= read -r image; do
+        [ -n "$image" ] && extra+=(--image "$image")
+      done < "$images_tmp"
+      "$cmd" "${extra[@]}" "$clean_prompt" 2>&1 | codex_stream_parser "$transcript_file"
       status=${PIPESTATUS[0]}
       ;;
     cursor)
       printf "NovaNode: Cursor CLI does not expose terminal chat responses. Use /open to launch Cursor Chat.\n" >> "$transcript_file"
-      return 0
+      status=0
       ;;
   esac
+
+  rm -f "$prompt_tmp" "$images_tmp" 2>/dev/null
 
   if [ "$status" -ne 0 ]; then
     printf "NovaNode: %s exited with status %s.\n" "$provider" "$status" >> "$transcript_file"
@@ -377,6 +626,7 @@ for line in raw.splitlines():
     })
 
 selected = next((p for p in providers if p["key"] == active), providers[0] if providers else None)
+providers_sorted = sorted(providers, key=lambda p: 0 if p["key"] == active else 1)
 
 messages = []
 try:
@@ -612,7 +862,7 @@ status_left = f"{GREEN}{state_line}{RESET}" if state_line else ""
 status_right = ""
 
 if providers:
-    prov_status = "   ".join(compact_provider(p) for p in providers)
+    prov_status = "   ".join(compact_provider(p) for p in providers_sorted)
 else:
     prov_status = f"{DIM}usage unavailable{RESET}"
 
@@ -653,6 +903,8 @@ case "${1:-}" in
 esac
 
 active_provider="claude"
+default_model_claude="${NOVANODE_DEFAULT_MODEL_CLAUDE:-sonnet}"
+default_model_codex="${NOVANODE_DEFAULT_MODEL_CODEX:-gpt-5.5}"
 model_claude="${NOVANODE_MODEL_CLAUDE:-}"
 model_codex="${NOVANODE_MODEL_CODEX:-}"
 model_cursor="${NOVANODE_MODEL_CURSOR:-auto}"
@@ -663,6 +915,7 @@ awaiting_model=0
 model_picker_provider=""
 model_picker_options=()
 usage_data="$(load_usage)"
+choose_default_provider
 
 show_model_picker() {
   local provider="$1"
@@ -682,6 +935,7 @@ show_model_picker() {
       current="$model_codex"
       opts=(
         "default|Use codex CLI default"
+        "gpt-5.5|GPT-5.5"
         "gpt-5-codex|GPT-5 Codex"
         "gpt-5|GPT-5"
       )
@@ -715,20 +969,23 @@ show_model_picker() {
 }
 
 models_arg() {
-  printf "claude=%s|codex=%s|cursor=%s" "$model_claude" "$model_codex" "$model_cursor"
+  printf "claude=%s|codex=%s|cursor=%s" \
+    "${model_claude:-$default_model_claude}" \
+    "${model_codex:-$default_model_codex}" \
+    "$model_cursor"
 }
 
 enter_live_screen() {
   if [ -t 1 ]; then
-    printf "\033[?1049h\033[H\033[?25h"
+    printf "\033[?1049h\033[?2004h\033[H\033[?25h"
   fi
 }
 
 leave_live_screen() {
   if [ -t 1 ]; then
-    printf "\033[?25h\033[?1049l"
+    printf "\033[?25h\033[?2004l\033[?1049l"
   else
-    printf "\033[?25h"
+    printf "\033[?25h\033[?2004l"
   fi
 }
 
@@ -825,29 +1082,101 @@ run_with_activity() {
 }
 
 read_prompt() {
-  local buf="" ch
+  local buf="" ch rendered seq seq_ch paste pch prev1 prev2 prev3 prev4 prev5
+  if [ ! -t 0 ] || [ ! -t 1 ]; then
+    IFS= read -r REPLY
+    return $?
+  fi
+  redraw_prompt_input() {
+    local cols max plain_len pad colored
+    rendered="$(display_prompt_input "$buf")"
+    cols="$(tput cols 2>/dev/null || printf 80)"
+    max=$((cols - 6))
+    if [ "$max" -lt 20 ]; then
+      max=20
+    fi
+    if [ "${#rendered}" -gt "$max" ]; then
+      rendered="…${rendered: -$((max - 1))}"
+    fi
+    colored="$(color_input_display "$rendered")"
+    plain_len=${#rendered}
+    pad=$((cols - plain_len - 4))
+    if [ "$pad" -lt 1 ]; then
+      pad=1
+    fi
+    printf "\r\033[2K%s %s› %s%*s %s" "$GRAY_BG" "$GREEN" "$colored" "$pad" "" "$RESET"
+  }
+  normalize_literal_paste_markers() {
+    local before middle after rest
+    while [[ "$buf" == *"[200~"* && "$buf" == *"[201~"* ]]; do
+      before="${buf%%"[200~"*}"
+      rest="${buf#*"[200~"}"
+      middle="${rest%%"[201~"*}"
+      after="${rest#*"[201~"}"
+      buf="$before$middle$after"
+    done
+    buf="${buf//"[200~"/}"
+    buf="${buf//"[201~"/}"
+    buf="${buf//$'\357\277\275'/}"
+    buf="${buf#"${buf%%[![:space:]\?]*}"}"
+  }
+  maybe_redraw_prompt_input() {
+    normalize_literal_paste_markers
+    redraw_prompt_input
+  }
   while IFS= read -rsn1 ch; do
     if [ -z "$ch" ]; then
+      normalize_literal_paste_markers
+      if [[ "$buf" == "?" || "$buf" == "??" ]]; then
+        buf=""
+      fi
       printf "\n"
       REPLY="$buf"
       return 0
     fi
     if [ "$ch" = $'\e' ]; then
-      while [ -n "$buf" ]; do
-        buf="${buf%?}"
-        printf "\b \b"
+      seq=""
+      while [ "${#seq}" -lt 5 ]; do
+        if ! IFS= read -rsn1 -t 0.2 seq_ch 2>/dev/null; then
+          break
+        fi
+        seq+="$seq_ch"
+        [ "$seq_ch" = "~" ] && break
       done
+      if [ "$seq" = "[200~" ]; then
+        paste=""
+        prev1=""; prev2=""; prev3=""; prev4=""; prev5=""
+        while IFS= read -rsn1 pch; do
+          paste+="$pch"
+          prev1="$prev2"; prev2="$prev3"; prev3="$prev4"; prev4="$prev5"; prev5="$pch"
+          if [ "$prev1$prev2$prev3$prev4$prev5" = $'\e[201~' ]; then
+            paste="${paste%$'\e[201~'}"
+            break
+          elif [ "$prev1$prev2$prev3$prev4$prev5" = "[201~" ]; then
+            paste="${paste%"[201~"}"
+            break
+          fi
+        done
+        buf+="$paste"
+        redraw_prompt_input
+      elif [ -n "$seq" ]; then
+        redraw_prompt_input
+      else
+        buf=""
+        redraw_prompt_input
+      fi
       continue
     fi
     if [ "$ch" = $'\x7f' ] || [ "$ch" = $'\b' ]; then
       if [ -n "$buf" ]; then
         buf="${buf%?}"
-        printf "\b \b"
+        redraw_prompt_input
       fi
       continue
     fi
     buf+="$ch"
-    printf "%s" "$ch"
+    normalize_literal_paste_markers
+    maybe_redraw_prompt_input
   done
   REPLY="$buf"
   return 1
@@ -864,6 +1193,7 @@ handle_prompt() {
   run_with_activity "$active_provider" "$prompt_text" "$TRANSCRIPT_FILE" "$approve"
   local run_status=$?
   usage_data="$(load_usage)"
+  choose_default_provider
   if [ "$run_status" -ne 130 ] && [ "$approve" -eq 0 ] && needs_approval "$TRANSCRIPT_FILE"; then
     awaiting_approval=1
     pending_prompt="$prompt_text"
@@ -941,6 +1271,7 @@ while true; do
       ;;
     /usage)
       usage_data="$(load_usage)"
+      choose_default_provider
       render_screen "$active_provider" "$usage_data" "$TRANSCRIPT_FILE" "" "$(models_arg)"
       ;;
     /model)
@@ -994,8 +1325,9 @@ while true; do
       echo "Unknown command. Run /help."
       ;;
     *)
+      display_input="$(summarize_prompt_for_chat "$input")"
       printf "\r\033[2K"
-      printf "You: [%s] %s\n" "$active_provider" "$input" >> "$TRANSCRIPT_FILE"
+      printf "You: [%s] %s\n" "$active_provider" "$display_input" >> "$TRANSCRIPT_FILE"
       handle_prompt "$input" 0
       ;;
   esac
