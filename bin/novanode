@@ -3,6 +3,7 @@
 VERSION="1.0.4"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 NN_USAGE="${SCRIPT_DIR}/nn-usage"
+WORKSPACE_DIR="$(pwd)"
 
 ORANGE=$'\033[38;5;208m'
 GREEN=$'\033[38;5;82m'
@@ -150,7 +151,7 @@ render_screen() {
   local data="$2"
   local transcript_file="$3"
   local state_line="${4:-}"
-  python3 - "$active" "$data" "$transcript_file" "$state_line" "$VERSION" << 'PYEOF'
+  python3 - "$active" "$data" "$transcript_file" "$state_line" "$VERSION" "$WORKSPACE_DIR" << 'PYEOF'
 import re, shutil, sys, textwrap
 
 active = sys.argv[1]
@@ -158,6 +159,7 @@ raw = sys.argv[2]
 transcript_file = sys.argv[3]
 state_line = sys.argv[4]
 script_version = sys.argv[5]
+workspace_dir = sys.argv[6]
 size = shutil.get_terminal_size((106, 34))
 width = max(80, size.columns)
 height = max(24, size.lines)
@@ -295,16 +297,17 @@ left_lines = wrap_block(
     [
         f"{BOLD}{WHITE}NovaNode{RESET}",
         f"{GREEN}Chat stays here; providers run in-house.{RESET}",
+        f"{DIM}Workspace {workspace_dir}{RESET}",
         f"{DIM}{selected['key'] if selected else 'claude'} {selected['version'] if selected else 'n/a'} · {script_version}{RESET}",
     ],
     left_w,
 )
 right_lines = wrap_block(
     [
-        f"{BOLD}{GREEN}Pick a provider. See usage before tokens.{RESET}",
+        f"{BOLD}{GREEN}Pick a provider. See usage first.{RESET}",
         f"{DIM}/use claude · /use codex · /use cursor · /open{RESET}",
         f"{DIM}/usage · /quit{RESET}",
-        f"{GREEN}Usage stays inline; chat keeps room.{RESET}",
+        f"{GREEN}Usage stays inline; chat stays open.{RESET}",
     ],
     right_w,
 )
@@ -351,15 +354,14 @@ else:
         print()
 
 print(f"{DIM}{'─' * width}{RESET}")
+if state_line:
+    print(f"{ORANGE}{state_line}{RESET}")
 if providers:
     status = "  ".join(compact_provider(p) for p in providers)
 else:
     status = f"{DIM}usage unavailable{RESET}"
 print(fit(status, width))
-if state_line:
-    print(f"{ORANGE}{state_line}{RESET}")
-else:
-    print(f"{DIM}Ready. Type a prompt and press Enter.{RESET}")
+print(f"{DIM}Ready. Type a prompt and press Enter.{RESET}")
 PYEOF
 }
 
@@ -436,6 +438,7 @@ while true; do
       ;;
     *)
       printf "\r\033[2K"
+      printf "NovaNode: workspace %s\n" "$WORKSPACE_DIR" >> "$TRANSCRIPT_FILE"
       printf "You: [%s] %s\n" "$active_provider" "$input" >> "$TRANSCRIPT_FILE"
       render_screen "$active_provider" "$usage_data" "$TRANSCRIPT_FILE" "NovaNode: $active_provider is thinking..."
       run_prompt "$active_provider" "$input" "$TRANSCRIPT_FILE"
