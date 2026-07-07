@@ -138,13 +138,6 @@ run_prompt() {
   return "$status"
 }
 
-git_changes() {
-  if ! command -v git >/dev/null 2>&1; then
-    return 0
-  fi
-  git -C "$WORKSPACE_DIR" status --short --untracked-files=normal 2>/dev/null | head -n 12
-}
-
 load_usage() {
   if [ ! -x "$NN_USAGE" ]; then
     echo ""
@@ -283,9 +276,6 @@ def assistant_block(text, limit):
 def think_block(text, limit):
     return [f"{ORANGE}{line}{RESET}" for line in wrap_plain(text, limit)]
 
-def change_block(text, limit):
-    return [f"{ORANGE}{line}{RESET}" for line in wrap_plain(text, limit)]
-
 header_inner = width - 4
 left_w = max(32, min(44, (header_inner - 3) // 2))
 right_w = header_inner - left_w - 3
@@ -333,18 +323,6 @@ for index in range(header_rows):
 header.append(box_bottom_line())
 
 chat_lines = []
-git_lines = []
-try:
-    import subprocess
-    git = subprocess.run(
-        ["git", "-C", workspace_dir, "status", "--short", "--untracked-files=normal"],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    git_lines = [line.rstrip("\n") for line in git.stdout.splitlines()[:12] if line.strip()]
-except Exception:
-    git_lines = []
 
 for msg in messages:
     if msg.startswith("You:"):
@@ -358,11 +336,6 @@ for msg in messages:
         chat_lines.extend(assistant_block(msg[len("Codex CLI: "):], width - 6))
     else:
         chat_lines.extend([f"{DIM}{line}{RESET}" for line in wrap_plain(msg, width - 6)])
-
-if git_lines:
-    chat_lines.append(f"{ORANGE}Workspace changes:{RESET}")
-    for line in git_lines:
-        chat_lines.extend(change_block(line, width - 6))
 
 chat_h = max(8, height - len(header) - 6)
 visible_chat = chat_lines[-chat_h:]
@@ -419,13 +392,47 @@ usage_data="$(load_usage)"
 TRANSCRIPT_FILE=$(mktemp "${TMPDIR:-/tmp}/novanode-chat.XXXXXX")
 trap 'rm -f "$TRANSCRIPT_FILE" 2>/dev/null' EXIT
 
+read_prompt() {
+  local buf="" ch tail
+  while IFS= read -rsn1 ch; do
+    if [ -z "$ch" ]; then
+      printf "\n"
+      REPLY="$buf"
+      return 0
+    fi
+    if [ "$ch" = $'\e' ]; then
+      if IFS= read -rsn2 -t 0.05 tail; then
+        continue
+      fi
+      printf "\n"
+      REPLY=$'\e'
+      return 0
+    fi
+    if [ "$ch" = $'\x7f' ] || [ "$ch" = $'\b' ]; then
+      if [ -n "$buf" ]; then
+        buf="${buf%?}"
+        printf "\b \b"
+      fi
+      continue
+    fi
+    buf+="$ch"
+    printf "%s" "$ch"
+  done
+  REPLY="$buf"
+  return 1
+}
+
 render_screen "$active_provider" "$usage_data" "$TRANSCRIPT_FILE"
 
 while true; do
   printf "%s%s%s › " "$GREEN" "$active_provider" "$RESET"
-  IFS= read -r input || break
+  read_prompt || break
+  input="$REPLY"
 
   case "$input" in
+    $'\e')
+      break
+      ;;
     "")
       continue
       ;;
