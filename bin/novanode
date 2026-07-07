@@ -173,6 +173,7 @@ metadata_keys = {
     "reasoning effort", "reasoning summaries", "session id",
 }
 skip_user_lines = 0
+capture_tokens = False
 seen_text = set()
 
 def emit(line):
@@ -186,13 +187,25 @@ for raw in sys.stdin:
         continue
 
     lower = stripped.lower()
+    if capture_tokens:
+        emit(f"NovaNode-tokens: codex={stripped}")
+        capture_tokens = False
+        continue
     if lower.startswith("model:"):
         model = stripped.split(":", 1)[1].strip()
         if model:
             emit(f"NovaNode-model: codex={model}")
         continue
+    if lower.startswith("tokens used"):
+        value = stripped.split(":", 1)[1].strip() if ":" in stripped else ""
+        if value:
+            emit(f"NovaNode-tokens: codex={value}")
+        else:
+            capture_tokens = True
+        continue
     if (
         stripped == "--------"
+        or lower == "codex"
         or lower == "assistant"
         or lower == "user"
         or lower.startswith("reading additional input")
@@ -382,6 +395,17 @@ for msg in messages:
             if key and value and not models.get(key):
                 models[key] = value
 
+token_status = ""
+for msg in messages:
+    if msg.startswith("NovaNode-tokens:"):
+        payload = msg[len("NovaNode-tokens:"):].strip()
+        if "=" in payload:
+            key, value = payload.split("=", 1)
+            key = key.strip()
+            value = value.strip()
+            if key and value:
+                token_status = f"{key} tokens used {value}"
+
 def compact_provider(provider):
     if not provider:
         return f"{DIM}usage unavailable{RESET}"
@@ -422,7 +446,12 @@ def user_block(text, limit):
     return out
 
 def assistant_block(text, limit):
-    return [f"{GREEN}{line}{RESET}" for line in wrap_plain(text, limit)]
+    wrapped = wrap_plain(text, limit - 2)
+    out = []
+    for index, line in enumerate(wrapped):
+        prefix = "• " if index == 0 else "  "
+        out.append(f"{GREEN}{prefix}{line}{RESET}")
+    return out
 
 def think_block(text, limit):
     return [f"{ORANGE}{line}{RESET}" for line in wrap_plain(text, limit)]
@@ -544,12 +573,12 @@ for msg in messages:
         chat_lines.extend(assistant_block(msg[len("Claude Code: "):], width - 6))
     elif msg.startswith("Codex CLI:"):
         chat_lines.extend(assistant_block(msg[len("Codex CLI: "):], width - 6))
-    elif msg.startswith("NovaNode-model:"):
+    elif msg.startswith("NovaNode-model:") or msg.startswith("NovaNode-tokens:"):
         continue
     else:
         chat_lines.extend([f"{DIM}{line}{RESET}" for line in wrap_plain(msg, width - 6)])
 
-chat_h = max(6, height - len(header) - 6)
+chat_h = max(6, height - len(header) - 7)
 visible_chat = chat_lines[-chat_h:]
 
 sys.stdout.write("\033[H\033[2J")
@@ -564,16 +593,29 @@ for _ in range(max(0, chat_h - len(visible_chat))):
 
 border = f"{ORANGE}{'─' * width}{RESET}"
 
-if state_line:
-    row_content = state_line
-else:
-    row_content = f"{GREEN}›{RESET} "
+def status_row(left, right, limit):
+    left = left or ""
+    right = right or ""
+    left_plain = strip_ansi(left)
+    right_plain = strip_ansi(right)
+    if not left and not right:
+        return ""
+    if len(left_plain) + len(right_plain) + 1 > limit:
+        left = fit(left, max(0, limit - len(right_plain) - 1)).rstrip()
+        left_plain = strip_ansi(left)
+    gap = max(1, limit - len(left_plain) - len(right_plain))
+    return f"{left}{' ' * gap}{right}"
+
+row_content = f"{GREEN}›{RESET} "
+status_left = f"{GREEN}{state_line}{RESET}" if state_line else ""
+status_right = f"{DIM}{token_status}{RESET}" if token_status else ""
 
 if providers:
     prov_status = "   ".join(compact_provider(p) for p in providers)
 else:
     prov_status = f"{DIM}usage unavailable{RESET}"
 
+print(fit(status_row(status_left, status_right, width), width))
 print(border)
 print(fit(row_content, width))
 print(border)
