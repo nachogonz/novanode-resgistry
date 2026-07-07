@@ -150,13 +150,14 @@ render_screen() {
   local data="$2"
   local transcript_file="$3"
   local state_line="${4:-}"
-  python3 - "$active" "$data" "$transcript_file" "$state_line" << 'PYEOF'
+  python3 - "$active" "$data" "$transcript_file" "$state_line" "$VERSION" << 'PYEOF'
 import re, shutil, sys, textwrap
 
 active = sys.argv[1]
 raw = sys.argv[2]
 transcript_file = sys.argv[3]
 state_line = sys.argv[4]
+script_version = sys.argv[5]
 size = shutil.get_terminal_size((106, 34))
 width = max(80, size.columns)
 height = max(24, size.lines)
@@ -274,17 +275,49 @@ def think_block(text, limit):
     return [f"{ORANGE}{line}{RESET}" for line in wrap_plain(text, limit)]
 
 header_inner = width - 4
-left_w = max(28, min(40, (header_inner - 3) // 2))
+left_w = max(32, min(44, (header_inner - 3) // 2))
 right_w = header_inner - left_w - 3
-title = " NovaNode · Claude Code "
+title = f" NovaNode · AI Terminal · v{script_version} "
 
-header = [
-    f"{ORANGE}╭─{title}{'─' * max(0, header_inner - len(title))}╮{RESET}",
-    f"{ORANGE}│{RESET} {fill(f'{BOLD}{WHITE}NovaNode{RESET}', left_w)} {ORANGE}│{RESET} {fill(f'{BOLD}{GREEN}Chat stays here; provider CLIs run under the hood.{RESET}', right_w)} {ORANGE}│{RESET}",
-    f"{ORANGE}│{RESET} {fill(f'{DIM}AI terminal hub for Claude, Codex and Cursor{RESET}', left_w)} {ORANGE}│{RESET} {fill(f'{DIM}/use claude · /use codex · /use cursor · /open · /usage · /quit{RESET}', right_w)} {ORANGE}│{RESET}",
-    f"{ORANGE}│{RESET} {fill(header_usage(selected), left_w)} {ORANGE}│{RESET} {fill(f'{DIM}Type a prompt. NovaNode captures the response back into this view.{RESET}', right_w)} {ORANGE}│{RESET}",
-    f"{ORANGE}╰{'─' * (header_inner + 2)}╯{RESET}",
-]
+def box_top_line():
+    return f"{ORANGE}╭─{title}{'─' * max(0, header_inner - len(title))}╮{RESET}"
+
+def box_bottom_line():
+    return f"{ORANGE}╰{'─' * (header_inner + 2)}╯{RESET}"
+
+def wrap_block(lines, width_limit):
+    out = []
+    for line in lines:
+        out.extend(wrap_plain(line, width_limit))
+    return out
+
+left_lines = wrap_block(
+    [
+        f"{BOLD}{WHITE}NovaNode{RESET}",
+        f"{GREEN}Chat stays here; providers run in-house.{RESET}",
+        f"{DIM}{selected['key'] if selected else 'claude'} {selected['version'] if selected else 'n/a'} · {script_version}{RESET}",
+    ],
+    left_w,
+)
+right_lines = wrap_block(
+    [
+        f"{BOLD}{GREEN}Pick a provider. See usage before tokens.{RESET}",
+        f"{DIM}/use claude · /use codex · /use cursor · /open{RESET}",
+        f"{DIM}/usage · /quit{RESET}",
+        f"{GREEN}Usage stays inline; chat keeps room.{RESET}",
+    ],
+    right_w,
+)
+
+header_rows = max(len(left_lines), len(right_lines))
+header = [box_top_line()]
+for index in range(header_rows):
+    left_text = left_lines[index] if index < len(left_lines) else ""
+    right_text = right_lines[index] if index < len(right_lines) else ""
+    header.append(
+        f"{ORANGE}│{RESET} {fill(left_text, left_w)} {ORANGE}│{RESET} {fill(right_text, right_w)} {ORANGE}│{RESET}"
+    )
+header.append(box_bottom_line())
 
 chat_lines = []
 for msg in messages:
