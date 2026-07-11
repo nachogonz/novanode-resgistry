@@ -1630,6 +1630,12 @@ while true; do
           ;;
       esac
       ;;
+    /*/*|*.png*|*.PNG*|*.jpg*|*.JPG*|*.jpeg*|*.JPEG*|*.webp*|*.WEBP*|*.gif*|*.GIF*|*.bmp*|*.BMP*|*.tiff*|*.TIFF*|*.heic*|*.HEIC*|~/*)
+      display_input="$(summarize_prompt_for_chat "$input")"
+      printf "\r\033[2K"
+      printf "You: [%s] %s\n" "$active_provider" "$display_input" >> "$TRANSCRIPT_FILE"
+      handle_prompt "$input" 0
+      ;;
     /*)
       printf "NovaNode: unknown command '%s'.\n" "$input" >> "$TRANSCRIPT_FILE"
       echo "Unknown command. Run /help."
