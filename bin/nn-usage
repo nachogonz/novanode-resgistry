@@ -1448,9 +1448,6 @@ rows = [
     f"| {' ' * w} | {' ' * w} | {' ' * w} |",
     f"| {cell(f'Weekly · {c7_pct} used', f'resets {c7_reset}')} | {cell(f'{cx7_label} · {cx7_pct}% used', f'resets {cx7_reset}')} | {cell(f'Premium · {prem_pct}')} |",
     f"| {c7_bar}{' ' * max(1, w - len(c7_bar))} | {cx7_bar}{' ' * max(1, w - len(cx7_bar))} | {cp_bar}{' ' * max(1, w - len(cp_bar))} |",
-    f"| {' ' * w} | {' ' * w} | {' ' * w} |",
-    f"| {' ' * w} | {' ' * w} | {cell(f'Total · {total_pct}', f'ends {cycle_end}')} |",
-    f"| {' ' * w} | {' ' * w} | {ct_bar}{' ' * max(1, w - len(ct_bar))} |",
 ]
 print("\n".join(rows))
 PYEOF
