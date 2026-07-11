@@ -19,7 +19,7 @@ usage() {
   cat << EOF
 NovaNode
 
-AI terminal hub for Claude, Codex and Cursor.
+AI terminal hub for Claude and Codex.
 
 Usage:
   novanode
@@ -27,15 +27,14 @@ Usage:
   novanode --version
   novanode claude
   novanode codex
-  novanode cursor
 
 Inside NovaNode:
-  /use claude|codex|cursor  Select provider
-  /model [provider] name    Show or set the model (e.g. /model opus-4.7)
-  /open                     Open selected provider CLI
-  /usage                    Refresh usage summary
-  /providers                Show providers
-  /quit                     Exit (or press ESC)
+  /use claude|codex     Select provider
+  /model [provider] name  Show or set the model (e.g. /model opus-4.7)
+  /open                 Open selected provider CLI
+  /usage                Refresh usage summary
+  /providers            Show providers
+  /quit                 Exit (or press ESC)
 
 When a provider needs approval to edit, reply "y" to approve or "n" to skip.
 EOF
@@ -45,7 +44,6 @@ provider_cmd() {
   case "$1" in
     claude) echo "claude" ;;
     codex) echo "codex" ;;
-    cursor) echo "cursor" ;;
   esac
 }
 
@@ -53,7 +51,6 @@ provider_label() {
   case "$1" in
     claude) echo "Claude Code" ;;
     codex) echo "Codex CLI" ;;
-    cursor) echo "Cursor" ;;
   esac
 }
 
@@ -64,9 +61,6 @@ exec_provider() {
   if ! command -v "$cmd" >/dev/null 2>&1; then
     echo "NovaNode: ${cmd} is not installed or not on PATH." >&2
     return 127
-  fi
-  if [ "$provider" = "cursor" ]; then
-    exec "$cmd" --chat
   fi
   exec "$cmd"
 }
@@ -80,17 +74,7 @@ send_prompt() {
     echo "NovaNode: ${cmd} is not installed or not on PATH." >&2
     return 127
   fi
-
-  case "$provider" in
-    claude|codex)
-      "$cmd" "$prompt"
-      ;;
-    cursor)
-      echo "NovaNode: Cursor CLI does not expose a stable terminal chat prompt."
-      echo "Opening Cursor Chat instead."
-      "$cmd" --chat
-      ;;
-  esac
+  "$cmd" "$prompt"
 }
 
 append_prefixed() {
@@ -122,6 +106,14 @@ image_re = r"(?:~|/)[^\n]*?\.(?:png|jpe?g|webp|gif|bmp|tiff|heic)"
 def clean_paste_markers(text):
     return text.replace("\x1b[200~", "").replace("\x1b[201~", "").replace("[200~", "").replace("[201~", "")
 
+def resolve_candidate(raw):
+    raw = raw.strip("\"' ")
+    for candidate in (raw, raw.replace("\\ ", " ")):
+        expanded = os.path.expanduser(candidate)
+        if os.path.isfile(expanded):
+            return expanded
+    return None
+
 def image_paths_from_prompt(text):
     text = clean_paste_markers(text)
     paths = []
@@ -140,9 +132,9 @@ def image_paths_from_prompt(text):
                 if end == -1:
                     break
                 candidate_end = end + len(ext)
-                candidate = os.path.expanduser(text[start:candidate_end].strip("\"' "))
-                if os.path.isfile(candidate):
-                    best = (start, candidate_end, candidate)
+                resolved = resolve_candidate(text[start:candidate_end])
+                if resolved:
+                    best = (start, candidate_end, resolved)
                     break
                 search = end + 1
             if best:
@@ -186,6 +178,14 @@ image_re = r"(?:~|/)[^\n]*?\.(?:png|jpe?g|webp|gif|bmp|tiff|heic)"
 def clean_paste_markers(text):
     return text.replace("\x1b[200~", "").replace("\x1b[201~", "").replace("[200~", "").replace("[201~", "")
 
+def resolve_candidate(raw):
+    raw = raw.strip("\"' ")
+    for candidate in (raw, raw.replace("\\ ", " ")):
+        expanded = os.path.expanduser(candidate)
+        if os.path.isfile(expanded):
+            return expanded
+    return None
+
 def extract(text):
     text = clean_paste_markers(text)
     found = []
@@ -204,9 +204,9 @@ def extract(text):
                 if end == -1:
                     break
                 candidate_end = end + len(ext)
-                candidate = os.path.expanduser(text[start:candidate_end].strip("\"' "))
-                if os.path.isfile(candidate):
-                    best = (start, candidate_end, candidate)
+                resolved = resolve_candidate(text[start:candidate_end])
+                if resolved:
+                    best = (start, candidate_end, resolved)
                     break
                 search = end + 1
             if best:
@@ -322,6 +322,31 @@ for part in parts:
         out.append(part)
 print("".join(out), end="")
 PYEOF
+}
+
+compose_prompt_with_attachments() {
+  local text="$1"
+  local images="$2"
+  if [ -n "$images" ]; then
+    printf "%s" "$text"
+    while IFS= read -r image; do
+      [ -n "$image" ] && printf " %s" "$image"
+    done <<< "$images"
+  else
+    printf "%s" "$text"
+  fi
+}
+
+display_prompt_attachments() {
+  local text="$1"
+  local images="$2"
+  local count=0 labels="" image
+  while IFS= read -r image; do
+    [ -n "$image" ] || continue
+    count=$((count + 1))
+    labels="${labels}[Image #${count}] "
+  done <<< "$images"
+  printf "%s%s" "$labels" "$text"
 }
 
 usage_pct_for_provider() {
@@ -491,11 +516,26 @@ run_prompt() {
       local extra=(--print --verbose --output-format stream-json)
       [ "$approve" -eq 1 ] && extra+=(--permission-mode acceptEdits)
       [ -n "$model_claude" ] && extra+=(--model "$model_claude")
+      local attach_dir="" attach_paths="" attach_index=0
       if [ -s "$images_tmp" ]; then
-        clean_prompt="${clean_prompt}"$'\n\n'"Attached image path(s):"$'\n'"$(sed 's/^/- /' "$images_tmp")"
+        attach_dir="$(mktemp -d "${TMPDIR:-/tmp}/novanode-attach.XXXXXX")"
+        while IFS= read -r image; do
+          [ -n "$image" ] || continue
+          [ -f "$image" ] || continue
+          attach_index=$((attach_index + 1))
+          local ext="${image##*.}"
+          local staged="${attach_dir}/image_${attach_index}.${ext}"
+          cp "$image" "$staged" 2>/dev/null || continue
+          attach_paths="${attach_paths}- ${staged}"$'\n'
+        done < "$images_tmp"
+        if [ -n "$attach_paths" ]; then
+          extra+=(--add-dir "$attach_dir")
+          clean_prompt="${clean_prompt}"$'\n\n'"The user attached image(s). Use the Read tool on each of these paths to view the images before responding:"$'\n'"${attach_paths}"
+        fi
       fi
       "$cmd" "${extra[@]}" "$clean_prompt" 2>/dev/null | claude_stream_parser "$transcript_file"
       status=${PIPESTATUS[0]}
+      [ -n "$attach_dir" ] && rm -rf "$attach_dir" 2>/dev/null
       ;;
     codex)
       local extra=(exec --color never)
@@ -506,10 +546,6 @@ run_prompt() {
       done < "$images_tmp"
       "$cmd" "${extra[@]}" "$clean_prompt" 2>&1 | codex_stream_parser "$transcript_file"
       status=${PIPESTATUS[0]}
-      ;;
-    cursor)
-      printf "NovaNode: Cursor CLI does not expose terminal chat responses. Use /open to launch Cursor Chat.\n" >> "$transcript_file"
-      status=0
       ;;
   esac
 
@@ -620,7 +656,7 @@ for line in raw.splitlines():
     providers.append({
         "key": key,
         "command": command,
-        "name": {"claude": "Claude Code", "codex": "Codex CLI", "cursor": "Cursor"}.get(key, key),
+        "name": {"claude": "Claude Code", "codex": "Codex CLI"}.get(key, key),
         "version": f"v{version}" if version != "n/a" else "not detected",
         "p1": p1,
         "used1": used1,
@@ -671,10 +707,7 @@ def compact_provider(provider):
     exhausted = used is not None and used >= 100
     tone = RED if exhausted else (GREEN if provider["key"] == active else DIM)
     model = models.get(provider["key"], "") or "default"
-    if provider["key"] == "cursor":
-        stat = "auto"
-    else:
-        stat = fmt_pct(provider["used1"])
+    stat = fmt_pct(provider["used1"])
     parts = [provider["key"]]
     if model and model != stat:
         parts.append(model)
@@ -743,7 +776,7 @@ left_lines = wrap_block(
 right_lines = wrap_block(
     [
         f"{BOLD}{GREEN}Pick a provider. See usage first.{RESET}",
-        f"{DIM}/use claude · /use codex · /use cursor · /open{RESET}",
+        f"{DIM}/use claude · /use codex · /open{RESET}",
         f"{DIM}/model <name> · /usage · /quit{RESET}",
         f"{GREEN}Approve edits with y/n when asked.{RESET}",
     ],
@@ -897,7 +930,7 @@ case "${1:-}" in
     echo "$VERSION"
     exit 0
     ;;
-  claude|codex|cursor)
+  claude|codex)
     exec_provider "$1"
     ;;
   "")
@@ -914,7 +947,6 @@ default_model_claude="${NOVANODE_DEFAULT_MODEL_CLAUDE:-sonnet}"
 default_model_codex="${NOVANODE_DEFAULT_MODEL_CODEX:-gpt-5.5}"
 model_claude="${NOVANODE_MODEL_CLAUDE:-}"
 model_codex="${NOVANODE_MODEL_CODEX:-}"
-model_cursor="${NOVANODE_MODEL_CURSOR:-auto}"
 last_prompt=""
 awaiting_approval=0
 pending_prompt=""
@@ -947,12 +979,6 @@ show_model_picker() {
         "gpt-5|GPT-5"
       )
       ;;
-    cursor)
-      current="$model_cursor"
-      opts=(
-        "auto|Auto (Cursor manages routing)"
-      )
-      ;;
   esac
   awaiting_model=1
   model_picker_provider="$provider"
@@ -976,15 +1002,14 @@ show_model_picker() {
 }
 
 models_arg() {
-  printf "claude=%s|codex=%s|cursor=%s" \
+  printf "claude=%s|codex=%s" \
     "${model_claude:-$default_model_claude}" \
-    "${model_codex:-$default_model_codex}" \
-    "$model_cursor"
+    "${model_codex:-$default_model_codex}"
 }
 
 enter_live_screen() {
   if [ -t 1 ]; then
-    printf "\033[?1049h\033[?2004h\033[H\033[?25h"
+    printf "\033[?1049h\033[?2004l\033[H\033[?25h"
   fi
 }
 
@@ -1089,98 +1114,17 @@ run_with_activity() {
 }
 
 read_prompt() {
-  local buf="" ch rendered seq seq_ch paste pch prev1 prev2 prev3 prev4 prev5
   if [ ! -t 0 ] || [ ! -t 1 ]; then
     IFS= read -r REPLY
     return $?
   fi
-  redraw_prompt_input() {
-    local cols max colored
-    rendered="$(display_prompt_input "$buf")"
-    cols="$(tput cols 2>/dev/null || printf 80)"
-    max=$((cols - 4))
-    if [ "$max" -lt 20 ]; then
-      max=20
-    fi
-    if [ "${#rendered}" -gt "$max" ]; then
-      rendered="…${rendered: -$((max - 1))}"
-    fi
-    colored="$(color_input_display "$rendered")"
-    printf "\r\033[2K%s› %s%s" "$GREEN" "$colored" "$RESET"
-  }
-  normalize_literal_paste_markers() {
-    local before middle after rest
-    while [[ "$buf" == *"[200~"* && "$buf" == *"[201~"* ]]; do
-      before="${buf%%"[200~"*}"
-      rest="${buf#*"[200~"}"
-      middle="${rest%%"[201~"*}"
-      after="${rest#*"[201~"}"
-      buf="$before$middle$after"
-    done
-    buf="${buf//"[200~"/}"
-    buf="${buf//"[201~"/}"
-    buf="${buf//$'\357\277\275'/}"
-    buf="${buf#"${buf%%[![:space:]\?]*}"}"
-  }
-  maybe_redraw_prompt_input() {
-    normalize_literal_paste_markers
-    redraw_prompt_input
-  }
-  while IFS= read -rsn1 ch; do
-    if [ -z "$ch" ]; then
-      normalize_literal_paste_markers
-      if [[ "$buf" == "?" || "$buf" == "??" ]]; then
-        buf=""
-      fi
-      printf "\n"
-      REPLY="$buf"
-      return 0
-    fi
-    if [ "$ch" = $'\e' ]; then
-      seq=""
-      while [ "${#seq}" -lt 5 ]; do
-        if ! IFS= read -rsn1 -t 0.2 seq_ch 2>/dev/null; then
-          break
-        fi
-        seq+="$seq_ch"
-        [ "$seq_ch" = "~" ] && break
-      done
-      if [ "$seq" = "[200~" ]; then
-        paste=""
-        prev1=""; prev2=""; prev3=""; prev4=""; prev5=""
-        while IFS= read -rsn1 pch; do
-          paste+="$pch"
-          prev1="$prev2"; prev2="$prev3"; prev3="$prev4"; prev4="$prev5"; prev5="$pch"
-          if [ "$prev1$prev2$prev3$prev4$prev5" = $'\e[201~' ]; then
-            paste="${paste%$'\e[201~'}"
-            break
-          elif [ "$prev1$prev2$prev3$prev4$prev5" = "[201~" ]; then
-            paste="${paste%"[201~"}"
-            break
-          fi
-        done
-        buf+="$paste"
-        redraw_prompt_input
-      elif [ -n "$seq" ]; then
-        redraw_prompt_input
-      else
-        buf=""
-        redraw_prompt_input
-      fi
-      continue
-    fi
-    if [ "$ch" = $'\x7f' ] || [ "$ch" = $'\b' ]; then
-      if [ -n "$buf" ]; then
-        buf="${buf%?}"
-        redraw_prompt_input
-      fi
-      continue
-    fi
-    buf+="$ch"
-    normalize_literal_paste_markers
-    maybe_redraw_prompt_input
-  done
-  REPLY="$buf"
+  printf "\r\033[2K%s› %s" "$GREEN" "$RESET"
+  local reply=""
+  if IFS= read -er reply; then
+    REPLY="$reply"
+    return 0
+  fi
+  REPLY=""
   return 1
 }
 
@@ -1222,7 +1166,6 @@ while true; do
       case "$model_picker_provider" in
         claude) model_claude="$new_model" ;;
         codex)  model_codex="$new_model" ;;
-        cursor) model_cursor="$new_model" ;;
       esac
       printf "NovaNode: %s model set to %s.\n" "$model_picker_provider" "${new_model:-default}" >> "$TRANSCRIPT_FILE"
     else
@@ -1284,7 +1227,7 @@ while true; do
       model_args="${input#/model }"
       read -r -a model_tokens <<< "$model_args"
       case "${model_tokens[0]}" in
-        claude|codex|cursor)
+        claude|codex)
           target_provider="${model_tokens[0]}"
           new_model="${model_tokens[*]:1}"
           ;;
@@ -1299,7 +1242,6 @@ while true; do
         case "$target_provider" in
           claude) model_claude="$new_model" ;;
           codex)  model_codex="$new_model" ;;
-          cursor) model_cursor="$new_model" ;;
         esac
         printf "NovaNode: %s model set to %s.\n" "$target_provider" "$new_model" >> "$TRANSCRIPT_FILE"
       fi
@@ -1312,13 +1254,13 @@ while true; do
     /use\ *)
       next="${input#/use }"
       case "$next" in
-        claude|codex|cursor)
+        claude|codex)
           active_provider="$next"
           render_screen "$active_provider" "$usage_data" "$TRANSCRIPT_FILE" "" "$(models_arg)"
           ;;
         *)
           printf "NovaNode: invalid provider '%s'.\n" "$next" >> "$TRANSCRIPT_FILE"
-          echo "Choose claude, codex or cursor."
+          echo "Choose claude or codex."
           ;;
       esac
       ;;

@@ -70,6 +70,40 @@ AI_USAGE_PLAN_PRICE_USD="${AI_USAGE_PLAN_PRICE_USD:-20}"
 AI_USAGE_CLAUDE_CUSTOM_SPEND_USD="${AI_USAGE_CLAUDE_CUSTOM_SPEND_USD:-2.5}"
 AI_USAGE_CODEX_CUSTOM_SPEND_USD="${AI_USAGE_CODEX_CUSTOM_SPEND_USD:-0}"
 
+codex_refresh() {
+  local done_file rc=0 spin_pid
+  done_file=$(mktemp "${TMPDIR:-/tmp}/ai-usage-codex-refresh.XXXXXX")
+
+  (
+    frames='⣾ ⣽ ⣻ ⢿ ⡿ ⣟ ⣯ ⣷'
+    while [ ! -s "$done_file" ]; do
+      for f in $frames; do
+        [ -s "$done_file" ] && break
+        printf '\r\033[2K%s  Refreshing Codex...' "$f" >&2
+        sleep 0.08
+      done
+    done
+    printf '\r\033[2K' >&2
+  ) &
+  spin_pid=$!
+
+  codex exec \
+    --skip-git-repo-check \
+    --sandbox read-only \
+    --ephemeral \
+    -C "$HOME" \
+    "reply with a single dot" </dev/null >/dev/null 2>&1 || rc=$?
+
+  echo done > "$done_file"
+  wait "$spin_pid" 2>/dev/null
+  rm -f "$done_file"
+
+  if [ "$rc" -ne 0 ]; then
+    echo "Codex refresh failed. Run 'codex' manually to reconnect." >&2
+  fi
+  return "$rc"
+}
+
 refresh_after_unlock() {
   [ -t 0 ] && [ -t 1 ] || return 0
   [ "${AI_USAGE_NO_REFRESH_PROMPT:-0}" = "1" ] && return 0
@@ -96,14 +130,14 @@ refresh_after_unlock() {
 
   case "$key" in
     c|C)
-      [ "$codex_needs" = "1" ] && codex
+      [ "$codex_needs" = "1" ] && codex_refresh
       ;;
     a|A)
       [ "$claude_needs" = "1" ] && claude
       ;;
     r|R)
       if [ "$codex_needs" = "1" ]; then
-        codex
+        codex_refresh
       fi
       if [ "$claude_needs" = "1" ]; then
         claude
@@ -1417,10 +1451,6 @@ rows = [
     f"| {' ' * w} | {' ' * w} | {' ' * w} |",
     f"| {' ' * w} | {' ' * w} | {cell(f'Total · {total_pct}', f'ends {cycle_end}')} |",
     f"| {' ' * w} | {' ' * w} | {ct_bar}{' ' * max(1, w - len(ct_bar))} |",
-    f"| {' ' * w} | {' ' * w} | {' ' * w} |",
-    f"| {cell('Spending')} | {cell('Spending')} | {cell('Spending')} |",
-    f"| {cell(f'Plan · {plan_spend}', f'Custom · {claude_custom_spend}')} | {cell(f'Plan · {plan_spend}', f'Custom · {codex_custom_spend}')} | {cell(f'Plan · {plan_spend}', f'Custom · {cursor_custom_spend}')} |",
-    f"| {cell(f'Total · {claude_total_spend}')} | {cell(f'Total · {codex_total_spend}')} | {cell(f'Total · {cursor_total_dollars}')} |",
 ]
 print("\n".join(rows))
 PYEOF
@@ -1452,12 +1482,6 @@ PYEOF
 
 MD=$(cat << MARKDOWN
 ${TABLE_BODY}
-
----
-
-## TOTAL DOLLARS
-
-${SPEND_LINE}
 
 ---
 
