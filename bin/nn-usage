@@ -1668,7 +1668,7 @@ def number(value):
 def battery(label, value, footer):
     used = number(value)
     if used is None:
-        meter = "▱▱▱▱▱"
+        meter = "▱▱▱▱▱▱▱▱▱▱"
         status = "n/a"
     else:
         left = max(0, 100 - used)
@@ -1678,26 +1678,34 @@ def battery(label, value, footer):
             filled = 5
         else:
             filled = max(1, min(4, int((left - 1e-9) // 25) + 1))
-        meter = "▰" * filled + "▱" * (5 - filled)
+        meter = "▰▰" * filled + "▱▱" * (5 - filled)
         status = f"{left:g}% left"
-    title = f"{label:<8} {meter}  {status}"
-    detail = f"{'':8} {footer}" if footer else ""
-    return title[:w].ljust(w), detail[:w].ljust(w)
+    title = f"{label}"
+    scaled_meter = " ".join(meter[i:i + 2] for i in range(0, len(meter), 2))
+    gauge = f"  {scaled_meter}  {status}"
+    detail = f"  {footer}" if footer else ""
+    return (
+        title[:w].ljust(w),
+        gauge[:w].ljust(w),
+        detail[:w].ljust(w),
+    )
 
-c1, c1_detail = battery("5h", c5_pct, f"reset {c5_reset}")
-c2, c2_detail = battery("Weekly", c7_pct, f"reset {c7_reset}")
-x1, x1_detail = battery(cx5_label, cx5_pct, cx5_reset)
-x2, x2_detail = battery(cx7_label, cx7_pct, f"reset {cx7_reset}")
-r1, r1_detail = battery("Auto", auto_pct, cycle_end)
-r2, r2_detail = battery("Premium", prem_pct, cycle_end)
+c1, c1_gauge, c1_detail = battery("5h", c5_pct, f"reset {c5_reset}")
+c2, c2_gauge, c2_detail = battery("Weekly", c7_pct, f"reset {c7_reset}")
+x1, x1_gauge, x1_detail = battery(cx5_label, cx5_pct, cx5_reset)
+x2, x2_gauge, x2_detail = battery(cx7_label, cx7_pct, f"reset {cx7_reset}")
+r1, r1_gauge, r1_detail = battery("Auto", auto_pct, cycle_end)
+r2, r2_gauge, r2_detail = battery("Premium", prem_pct, cycle_end)
 
 rows = [
     f"| {cell(f'**Claude Code** v{cver}')} | {cell(f'**Codex CLI** v{cxver}')} | {cell(f'**Cursor** v{cursor_ver}')} |",
     f"| {rule()} | {rule()} | {rule()} |",
     f"| {cell('Plan Usage')} | {cell('Plan Usage')} | {cell(cname)} |",
     f"| {c1} | {x1} | {r1} |",
+    f"| {c1_gauge} | {x1_gauge} | {r1_gauge} |",
     f"| {c1_detail} | {x1_detail} | {r1_detail} |",
     f"| {c2} | {x2} | {r2} |",
+    f"| {c2_gauge} | {x2_gauge} | {r2_gauge} |",
     f"| {c2_detail} | {x2_detail} | {r2_detail} |",
 ]
 print("\n".join(rows))
@@ -1716,9 +1724,10 @@ elif left >= 100:
     filled = 5
 else:
     filled = max(1, min(4, int((left - 1e-9) // 25) + 1))
-meter = "▰" * filled + "▱" * (5 - filled)
+meter = "▰▰" * filled + "▱▱" * (5 - filled)
 print("All providers")
-print(f"{meter}  {left:g}% left · ${SUPER_SUM} combined")
+scaled_meter = " ".join(meter[i:i + 2] for i in range(0, len(meter), 2))
+print(f"{scaled_meter}  {left:g}% left · ${SUPER_SUM} combined")
 PYEOF
 )
 
@@ -1782,6 +1791,8 @@ for line in sys.stdin:
         raw = f"{DIM}{raw}{RESET}"
     else:
         raw = f"{GREEN}{raw}{RESET}"
+    if "▰" in raw or "▱" in raw:
+        raw = f"{BOLD}{raw}{RESET}"
     if "▱" in raw:
         raw = raw.replace("▱", f"{DIM}▱{GREEN}")
     vis = re.sub(r"\033\[[0-9;]*m", "", raw)

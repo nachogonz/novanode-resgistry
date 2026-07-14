@@ -678,7 +678,7 @@ def pct_number(value):
 def token_battery(used_value):
     used = pct_number(used_value)
     if used is None:
-        return f"{DIM}[▱▱▱▱▱]{RESET}", "n/a"
+        return f"{BOLD}{DIM}▱▱ ▱▱ ▱▱ ▱▱ ▱▱{RESET}", "n/a"
     left = max(0.0, min(100.0, 100.0 - used))
     if left <= 0:
         filled = 0
@@ -687,10 +687,10 @@ def token_battery(used_value):
     else:
         filled = max(1, min(4, int((left - 1e-9) // 25) + 1))
     charge_tone = RED if left <= 0 else GREEN
-    meter = (
-        f"{DIM}[{RESET}{charge_tone}{'▰' * filled}"
-        f"{DIM}{'▱' * (5 - filled)}]{RESET}"
-    )
+    groups = [f"{charge_tone}▰▰" for _ in range(filled)]
+    groups.extend(f"{DIM}▱▱" for _ in range(5 - filled))
+    # Ten glyphs, grouped into five dense, larger visual blocks.
+    meter = f"{BOLD}{' '.join(groups)}{RESET}"
     shown = f"{left:g}%"
     return meter, shown
 
