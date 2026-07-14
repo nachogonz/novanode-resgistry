@@ -19,7 +19,7 @@ usage() {
   cat << EOF
 NovaNode
 
-AI terminal hub for Claude and Codex.
+AI terminal hub for Claude, Codex, and Cursor.
 
 Usage:
   novanode
@@ -27,9 +27,10 @@ Usage:
   novanode --version
   novanode claude
   novanode codex
+  novanode cursor
 
 Inside NovaNode:
-  /use claude|codex     Select provider
+  /claude /codex /cursor  Select provider
   /model [provider] name  Show or set the model (e.g. /model opus-4.7)
   /open                 Open selected provider CLI
   /usage                Refresh usage summary
@@ -44,6 +45,7 @@ provider_cmd() {
   case "$1" in
     claude) echo "claude" ;;
     codex) echo "codex" ;;
+    cursor) echo "cursor-agent" ;;
   esac
 }
 
@@ -51,6 +53,7 @@ provider_label() {
   case "$1" in
     claude) echo "Claude Code" ;;
     codex) echo "Codex CLI" ;;
+    cursor) echo "Cursor Agent" ;;
   esac
 }
 
@@ -348,10 +351,25 @@ choose_default_provider() {
   if provider_exhausted "$active_provider"; then
     case "$active_provider" in
       claude)
-        provider_exhausted codex || active_provider="codex"
+        if ! provider_exhausted codex; then
+          active_provider="codex"
+        elif ! provider_exhausted cursor; then
+          active_provider="cursor"
+        fi
         ;;
       codex)
-        provider_exhausted claude || active_provider="claude"
+        if ! provider_exhausted claude; then
+          active_provider="claude"
+        elif ! provider_exhausted cursor; then
+          active_provider="cursor"
+        fi
+        ;;
+      cursor)
+        if ! provider_exhausted claude; then
+          active_provider="claude"
+        elif ! provider_exhausted codex; then
+          active_provider="codex"
+        fi
         ;;
     esac
   fi
@@ -533,6 +551,22 @@ run_prompt() {
         [ -n "$image" ] && extra+=(--image "$image")
       done < "$images_tmp"
       "$cmd" "${extra[@]}" "$clean_prompt" 2>&1 | codex_stream_parser "$transcript_file"
+      status=${PIPESTATUS[0]}
+      ;;
+    cursor)
+      local extra=(--print --output-format text --trust --auto-review)
+      [ "$approve" -eq 1 ] && extra+=(--force)
+      [ -n "$model_cursor" ] && extra+=(--model "$model_cursor")
+      if [ -s "$images_tmp" ]; then
+        clean_prompt="${clean_prompt}"$'\n\n'"The user attached image(s) at these paths. Inspect them before responding:"
+        while IFS= read -r image; do
+          [ -n "$image" ] && clean_prompt="${clean_prompt}"$'\n'"- ${image}"
+        done < "$images_tmp"
+      fi
+      "$cmd" "${extra[@]}" "$clean_prompt" 2>&1 |
+        while IFS= read -r line; do
+          [ -n "$line" ] && printf "Cursor Agent: %s\n" "$line" >> "$transcript_file"
+        done
       status=${PIPESTATUS[0]}
       ;;
   esac
@@ -1184,7 +1218,7 @@ left_lines = (
 )
 right_lines = [
     f"{BOLD}{GREEN}Pick a provider. See usage first.{RESET}",
-    f"{DIM}/use claude · /use codex · /open{RESET}",
+    f"{DIM}/claude · /codex · /cursor · /open{RESET}",
     f"{DIM}/model <name> · /usage · /quit{RESET}",
     f"{GREEN}Approve edits with y/n when asked.{RESET}",
 ]
@@ -1270,6 +1304,8 @@ for msg in messages:
         chat_lines.extend(assistant_block(msg[len("Claude Code: "):], width - 6))
     elif msg.startswith("Codex CLI:"):
         chat_lines.extend(assistant_block(msg[len("Codex CLI: "):], width - 6))
+    elif msg.startswith("Cursor Agent:"):
+        chat_lines.extend(assistant_block(msg[len("Cursor Agent: "):], width - 6))
     elif msg.startswith("NovaNode-model:") or msg.startswith("NovaNode-tokens:"):
         continue
     else:
@@ -1365,13 +1401,13 @@ if not has_chat:
     for idx, line in enumerate(hero):
         put(hero_start + idx, center_line(line))
 
-    subtitle = f"{DIM}AI terminal hub · Claude · Codex{RESET}"
+    subtitle = f"{DIM}AI terminal hub · Claude · Codex · Cursor{RESET}"
     put(hero_start + len(hero) + 1, center_line(subtitle))
 
-    input_start_row = hero_start + len(hero) + 4
+    input_start_row = hero_start + len(hero) + 5
     input_card(input_start_row)
-    tip = f"{ORANGE}● Tip{RESET}{DIM}  /use claude or /use codex to choose a provider{RESET}"
-    put(input_start_row + input_h + 3, center_line(tip))
+    tip = f"{ORANGE}● Tip{RESET}{DIM}  /claude  ·  /codex  ·  /cursor{RESET}"
+    put(input_start_row + input_h + 4, center_line(tip))
 else:
     title_left = f" {BOLD}{ORANGE}NovaNode{RESET}{DIM}  chat{RESET}"
     if selected:
@@ -1439,7 +1475,7 @@ case "${1:-}" in
     echo "$VERSION"
     exit 0
     ;;
-  claude|codex)
+  claude|codex|cursor)
     exec_provider "$1"
     ;;
   "")
@@ -1454,8 +1490,10 @@ esac
 active_provider="claude"
 default_model_claude="${NOVANODE_DEFAULT_MODEL_CLAUDE:-sonnet}"
 default_model_codex="${NOVANODE_DEFAULT_MODEL_CODEX:-gpt-5.5}"
+default_model_cursor="${NOVANODE_DEFAULT_MODEL_CURSOR:-default}"
 model_claude="${NOVANODE_MODEL_CLAUDE:-}"
 model_codex="${NOVANODE_MODEL_CODEX:-}"
+model_cursor="${NOVANODE_MODEL_CURSOR:-}"
 last_prompt=""
 awaiting_approval=0
 pending_prompt=""
@@ -1489,6 +1527,12 @@ show_model_picker() {
         "gpt-5|GPT-5"
       )
       ;;
+    cursor)
+      current="$model_cursor"
+      opts=(
+        "default|Use Cursor Agent default"
+      )
+      ;;
   esac
   awaiting_model=1
   model_picker_provider="$provider"
@@ -1512,9 +1556,10 @@ show_model_picker() {
 }
 
 models_arg() {
-  printf "claude=%s|codex=%s" \
+  printf "claude=%s|codex=%s|cursor=%s" \
     "${model_claude:-$default_model_claude}" \
-    "${model_codex:-$default_model_codex}"
+    "${model_codex:-$default_model_codex}" \
+    "${model_cursor:-$default_model_cursor}"
 }
 
 ORIGINAL_STTY=""
@@ -1981,6 +2026,7 @@ while true; do
       case "$model_picker_provider" in
         claude) model_claude="$new_model" ;;
         codex)  model_codex="$new_model" ;;
+        cursor) model_cursor="$new_model" ;;
       esac
       printf "NovaNode: %s model set to %s.\n" "$model_picker_provider" "${new_model:-default}" >> "$TRANSCRIPT_FILE"
     else
@@ -2022,7 +2068,7 @@ while true; do
       model_args="${input#/model }"
       read -r -a model_tokens <<< "$model_args"
       case "${model_tokens[0]}" in
-        claude|codex)
+        claude|codex|cursor)
           target_provider="${model_tokens[0]}"
           new_model="${model_tokens[*]:1}"
           ;;
@@ -2037,6 +2083,7 @@ while true; do
         case "$target_provider" in
           claude) model_claude="$new_model" ;;
           codex)  model_codex="$new_model" ;;
+          cursor) model_cursor="$new_model" ;;
         esac
         printf "NovaNode: %s model set to %s.\n" "$target_provider" "$new_model" >> "$TRANSCRIPT_FILE"
       fi
@@ -2050,16 +2097,20 @@ while true; do
       enter_live_screen
       render_screen "$active_provider" "$usage_data" "$TRANSCRIPT_FILE" "" "$(models_arg)"
       ;;
+    /claude|/codex|/cursor)
+      active_provider="${input#/}"
+      render_screen "$active_provider" "$usage_data" "$TRANSCRIPT_FILE" "" "$(models_arg)"
+      ;;
     /use\ *)
       next="${input#/use }"
       case "$next" in
-        claude|codex)
+        claude|codex|cursor)
           active_provider="$next"
           render_screen "$active_provider" "$usage_data" "$TRANSCRIPT_FILE" "" "$(models_arg)"
           ;;
         *)
           printf "NovaNode: invalid provider '%s'.\n" "$next" >> "$TRANSCRIPT_FILE"
-          echo "Choose claude or codex."
+          echo "Choose claude, codex, or cursor."
           ;;
       esac
       ;;

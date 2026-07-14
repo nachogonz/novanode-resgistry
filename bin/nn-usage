@@ -2,6 +2,7 @@
 
 VERSION="1.0.4"
 SUMMARY_TSV=0
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 usage() {
   cat << EOF
@@ -1561,59 +1562,27 @@ def pad_line(text, w):
     visible = len(strip_ansi(text))
     return text + " " * max(0, w - visible)
 
-title = f" NovaNode · Token Usage "
-top = f"{ORANGE}╭─{title}{'─' * max(0, inner + 1 - len(title))}╮{RESET}"
-bottom = f"{ORANGE}╰{'─' * (inner + 2)}╯{RESET}"
-
 logo_path = find_logo_path()
-logo = compose_logo(logo_path, left_w) if logo_path else []
+logo = []
+if logo_path:
+    full_logo = load_full_logo(logo_path)
+    if full_logo is not None:
+        _mark, word = split_logo_parts(full_logo)
+        logo = image_to_braille(word, min(38, width - 10), 4, whiten=True)
 if not logo:
     logo = [f"{BOLD}{WHITE}NovaNode{RESET}"]
 
-left = (
-    expand_panel(
-        [
-            f"{BOLD}{GREEN}Welcome back {name}!{RESET}",
-            "",
-        ],
-        left_w,
-    )
-    + logo
-    + expand_panel(
-        [
-            "",
-            f"{DIM}Claude {claude_v} · Codex {codex_v} · Cursor {cursor_v}{RESET}",
-            f"{DIM}{cwd}{RESET}",
-        ],
-        left_w,
-    )
-)
+def centered(text):
+    visible = len(strip_ansi(text))
+    return " " * max(0, (width - visible) // 2) + text
 
-right = expand_panel(
-    [
-        f"{ORANGE}Tips for getting started{RESET}",
-        f"{GREEN}Run {BOLD}nn-usage{RESET}{GREEN} anytime for usage{RESET}",
-        f"{GREEN}Claude · Codex · Cursor in one view{RESET}",
-        "",
-        f"{ORANGE}What's tracked{RESET}",
-        f"{GREEN}5h + weekly limits per provider{RESET}",
-        f"{GREEN}Auto · premium · billing cycle{RESET}",
-        f"{GREEN}Plan spend + custom spend{RESET}",
-        f"{DIM}/nn-usage · NovaNode dev tools{RESET}",
-    ],
-    right_w,
-)
-
-rows = max(len(left), len(right))
-print(top)
-for i in range(rows):
-    l = left[i] if i < len(left) else ""
-    r = right[i] if i < len(right) else ""
-    print(
-        f"{ORANGE}│{RESET} {pad_line(l, left_w)} {ORANGE}│{RESET} "
-        f"{pad_line(r, right_w)} {ORANGE}│{RESET}"
-    )
-print(bottom)
+print()
+for line in logo:
+    print(centered(line))
+print(centered(f"{DIM}AI usage · Claude · Codex · Cursor{RESET}"))
+print()
+print(centered(f"{ORANGE}NovaNode{RESET}{DIM}  usage{RESET}"))
+print(centered(f"{DIM}{'─' * min(84, width - 8)}{RESET}"))
 print()
 PYEOF
 
@@ -1745,20 +1714,42 @@ ${SUPER_LINE}
 MARKDOWN
 )
 
-echo "$MD" | glow -w 0 - | sed 's/^  //' | LAYOUT="${LAYOUT}" python3 -c '
+echo "$MD" | LAYOUT="${LAYOUT}" python3 -c '
 import os, sys, re
 
 TARGET = 2
 WIDTH = int(os.environ.get("LAYOUT", "96")) - 2
+GREEN = "\033[38;5;82m"
+ORANGE = "\033[38;5;208m"
+DIM = "\033[38;5;245m"
+BOLD = "\033[1m"
+RESET = "\033[0m"
 
 for line in sys.stdin:
-    raw = line.rstrip("\n")
+    raw = line.rstrip("\n").strip()
+    raw = raw.replace("**", "").replace("## ", "").strip("*")
+    raw = raw.strip("|").strip()
+    if not raw.replace("|", "").strip():
+        print()
+        continue
+    if not raw:
+        print()
+        continue
+    if raw == "TOTAL TOKENS":
+        raw = f"{BOLD}{ORANGE}{raw}{RESET}"
+    elif raw.startswith("Claude Code") or "| Codex CLI" in raw:
+        raw = f"{BOLD}{GREEN}{raw}{RESET}"
+    elif set(raw.replace("|", "").replace(" ", "")) <= {"-"}:
+        raw = f"{DIM}{'─' * min(84, WIDTH)}{RESET}"
+    elif raw.startswith("Combined load") or raw == "claude · codex · cursor":
+        raw = f"{DIM}{raw}{RESET}"
+    else:
+        raw = f"{GREEN}{raw}{RESET}"
     vis = re.sub(r"\033\[[0-9;]*m", "", raw)
     if not vis.strip():
         print(raw)
         continue
-    lead = len(vis) - len(vis.lstrip())
-    aligned = " " * max(0, TARGET - lead) + raw
+    aligned = " " * TARGET + raw
     vis_aligned = re.sub(r"\033\[[0-9;]*m", "", aligned)
     if len(vis_aligned) < WIDTH:
         aligned = aligned + " " * (WIDTH - len(vis_aligned))
@@ -1779,3 +1770,17 @@ elif [ "$CX5_PCT" = "n/a" ] && [ "$CX7_PCT" = "n/a" ]; then
 fi
 
 refresh_after_unlock "$CLAUDE_NEEDS_REFRESH" "$CODEX_NEEDS_REFRESH"
+
+if [ -t 0 ] && [ -t 1 ]; then
+  printf '\n'
+  printf '  \033[38;5;208m▎\033[0m\033[48;5;237m  \033[1m\033[38;5;82m↵ Open NovaNode chat\033[0m\033[48;5;237m  \033[38;5;245mc chat · q close\033[0m\033[48;5;237m  \033[0m '
+  IFS= read -r -s -n 1 action || action=""
+  printf '\r\033[2K'
+  case "$action" in
+    ""|c|C)
+      exec "${SCRIPT_DIR}/novanode"
+      ;;
+    *)
+      ;;
+  esac
+fi
