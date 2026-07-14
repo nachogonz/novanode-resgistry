@@ -59,7 +59,7 @@ table_bar() { bar "$1" "${AI_USAGE_BAR_W:-22}"; }
 
 num_or_zero() {
   local v="$1"
-  if [ "$v" = "n/a" ] || [ "$v" = "stale" ] || [ -z "$v" ]; then
+  if [ "$v" = "n/a" ] || [ "$v" = "stale" ] || [ "$v" = "—" ] || [ -z "$v" ]; then
     echo "0"
   else
     echo "$v" | sed 's/%//'
@@ -87,12 +87,56 @@ codex_refresh() {
   ) &
   spin_pid=$!
 
-  codex exec \
-    --skip-git-repo-check \
-    --sandbox read-only \
-    --ephemeral \
-    -C "$HOME" \
-    "reply with a single dot" </dev/null >/dev/null 2>&1 || rc=$?
+  python3 - >/dev/null 2>&1 <<'PYEOF' || rc=$?
+import json, subprocess, sys, time
+
+try:
+    p = subprocess.Popen(
+        ["codex", "app-server", "--stdio"],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        text=True,
+    )
+except Exception:
+    sys.exit(1)
+
+req = (
+    '{"jsonrpc":"2.0","id":1,"method":"initialize",'
+    '"params":{"clientInfo":{"name":"nn-usage","version":"1.0.7"}}}\n'
+    '{"jsonrpc":"2.0","id":2,"method":"account/rateLimits/read","params":{}}\n'
+)
+ok = False
+try:
+    p.stdin.write(req)
+    p.stdin.flush()
+    deadline = time.time() + 8
+    while time.time() < deadline:
+        line = p.stdout.readline()
+        if not line:
+            break
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            msg = json.loads(line)
+        except Exception:
+            continue
+        if msg.get("id") == 2:
+            ok = "result" in msg
+            break
+finally:
+    try:
+        p.kill()
+    except Exception:
+        pass
+    try:
+        p.wait(timeout=1)
+    except Exception:
+        pass
+
+sys.exit(0 if ok else 1)
+PYEOF
 
   echo done > "$done_file"
   wait "$spin_pid" 2>/dev/null
@@ -648,7 +692,7 @@ PYEOF
 
 (
 python3 << 'PYEOF' > "$CODEX_TMP"
-import json, sqlite3, os
+import json, sqlite3, os, subprocess, time
 from datetime import datetime
 
 def bar(percent, w=22):
@@ -663,50 +707,167 @@ def fmt_reset(ts, weekly=False):
     except Exception:
         return "n/a"
 
-def emit(label, item, weekly=False):
+def short_label(dur_mins, default="5h"):
+    try:
+        if not dur_mins:
+            return default
+        m = int(dur_mins)
+        if m % 60 == 0:
+            return f"{m // 60}h"
+        return f"{m}m"
+    except Exception:
+        return default
+
+def emit(label, w, weekly=False):
+    if w is None:
+        print(f"{label}|{bar(0)}|n/a|n/a")
+        return
     now = datetime.now()
-    reset_ts = item.get("reset_at")
+    reset_ts = w.get("resetsAt", w.get("reset_at"))
+    used_raw = w.get("usedPercent", w.get("used_percent", 0))
+    try:
+        used = max(0, min(100, float(used_raw or 0)))
+    except Exception:
+        used = 0.0
     reset_dt = None
     if reset_ts is not None:
         try:
             reset_dt = datetime.fromtimestamp(float(reset_ts))
         except Exception:
             reset_dt = None
-
-    used = max(0, min(100, float(item.get("used_percent", 0))))
     stale = bool(reset_dt and reset_dt <= now and not weekly)
-
     if stale:
         reset_label = f"passed {reset_dt.strftime('%H:%M')} · run codex to refresh"
         print(f"{label}|{bar(0)}|stale|{reset_label}")
-        return
+    else:
+        print(f"{label}|{bar(used)}|{used:.0f}|{fmt_reset(reset_ts, weekly)}")
 
-    print(f"{label}|{bar(used)}|{used:.0f}|{fmt_reset(reset_ts, weekly)}")
-
-db = os.path.expanduser('~/.codex/logs_2.sqlite')
-try:
-    conn = sqlite3.connect(db)
-    cur = conn.cursor()
-    cur.execute(
-        "SELECT feedback_log_body FROM logs "
-        "WHERE feedback_log_body LIKE '%\"type\":\"codex.rate_limits\"%' "
-        "ORDER BY ts DESC LIMIT 1"
+def fetch_via_app_server(timeout=8):
+    try:
+        p = subprocess.Popen(
+            ["codex", "app-server", "--stdio"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+        )
+    except (FileNotFoundError, OSError):
+        return None
+    req = (
+        '{"jsonrpc":"2.0","id":1,"method":"initialize",'
+        '"params":{"clientInfo":{"name":"nn-usage","version":"1.0.7"}}}\n'
+        '{"jsonrpc":"2.0","id":2,"method":"account/rateLimits/read","params":{}}\n'
     )
-    row = cur.fetchone()
-    conn.close()
+    rl = None
+    try:
+        p.stdin.write(req)
+        p.stdin.flush()
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            line = p.stdout.readline()
+            if not line:
+                break
+            line = line.strip()
+            if not line.startswith("{"):
+                continue
+            try:
+                msg = json.loads(line)
+            except Exception:
+                continue
+            if msg.get("id") == 2:
+                res = msg.get("result") or {}
+                rl = res.get("rateLimits")
+                break
+    except Exception:
+        rl = None
+    finally:
+        try:
+            p.kill()
+        except Exception:
+            pass
+        try:
+            p.wait(timeout=1)
+        except Exception:
+            pass
+    return rl
 
+def fetch_from_sqlite():
+    db = os.path.expanduser('~/.codex/logs_2.sqlite')
+    if not os.path.exists(db):
+        return None
+    try:
+        conn = sqlite3.connect(db)
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT feedback_log_body FROM logs "
+            "WHERE feedback_log_body LIKE '%\"type\":\"codex.rate_limits\"%' "
+            "ORDER BY ts DESC LIMIT 1"
+        )
+        row = cur.fetchone()
+        conn.close()
+    except Exception:
+        return None
     if not row:
-        raise RuntimeError("no rate limit snapshot")
-
+        return None
     body = row[0]
     start = body.find('{')
-    data = json.loads(body[start:])
-    limits = data.get('rate_limits') or {}
-    emit("5h", limits.get('primary') or {})
-    emit("Weekly", limits.get('secondary') or {}, True)
-except Exception:
-    print("5h|░░░░░░░░░░░░░░░░░░░░░░|n/a|n/a")
-    print("Weekly|░░░░░░░░░░░░░░░░░░░░░░|n/a|n/a")
+    if start < 0:
+        return None
+    try:
+        data = json.loads(body[start:])
+    except Exception:
+        return None
+    return data.get('rate_limits')
+
+def normalize(w):
+    if not w:
+        return None
+    dur = w.get("windowDurationMins", w.get("window_duration_mins"))
+    return {
+        "usedPercent": w.get("usedPercent", w.get("used_percent")),
+        "resetsAt": w.get("resetsAt", w.get("reset_at")),
+        "windowDurationMins": dur,
+    }
+
+def pick_windows(rl):
+    if not rl:
+        return None, None
+    short = None
+    weekly = None
+    for key in ("primary", "secondary"):
+        w = normalize(rl.get(key))
+        if w is None:
+            continue
+        d = w.get("windowDurationMins")
+        if d is not None and d > 360:
+            if weekly is None:
+                weekly = w
+        else:
+            if short is None:
+                short = w
+    return short, weekly
+
+def emit_blank():
+    print(f"—|{bar(0)}|—|—")
+
+rl = fetch_via_app_server()
+if rl is None:
+    rl = fetch_from_sqlite()
+
+short, weekly = pick_windows(rl)
+
+if short is not None:
+    emit(short_label(short.get("windowDurationMins")), short, weekly=False)
+    if weekly is not None:
+        emit("Weekly", weekly, weekly=True)
+    else:
+        emit_blank()
+elif weekly is not None:
+    emit("Weekly", weekly, weekly=True)
+    emit_blank()
+else:
+    emit("5h", None, weekly=False)
+    emit("Weekly", None, weekly=True)
 PYEOF
 ) &
 
@@ -742,12 +903,20 @@ CODEX_NEEDS_REFRESH=0
 if [ "$CLAUDE_5H_PCT" = "n/a" ] || [ "$CLAUDE_WEEK_PCT" = "n/a" ]; then
   CLAUDE_NEEDS_REFRESH=1
 fi
-if [ "$CX5_PCT" = "stale" ] || [ "$CX5_PCT" = "n/a" ] || [ "$CX7_PCT" = "n/a" ]; then
+if [ "$CX5_PCT" = "stale" ] || [ "$CX7_PCT" = "stale" ]; then
+  CODEX_NEEDS_REFRESH=1
+elif [ "$CX5_PCT" = "n/a" ] && [ "$CX7_PCT" = "n/a" ]; then
   CODEX_NEEDS_REFRESH=1
 fi
 if [ "$CX5_PCT" = "stale" ]; then
   CX5_PCT_LABEL="stale"
   CX5_RESET_LABEL="$CX5_RESET"
+elif [ "$CX5_PCT" = "n/a" ]; then
+  CX5_PCT_LABEL="n/a"
+  CX5_RESET_LABEL="resets n/a"
+elif [ "$CX5_PCT" = "—" ]; then
+  CX5_PCT_LABEL="—"
+  CX5_RESET_LABEL=""
 else
   CX5_PCT_LABEL="${CX5_PCT}%"
   CX5_RESET_LABEL="resets ${CX5_RESET}"
@@ -1439,15 +1608,36 @@ codex_total_spend = """${CODEX_TOTAL_SPEND}"""
 cursor_custom_spend = """${CURSOR_CUSTOM_SPEND}"""
 cursor_total_dollars = """${CURSOR_TOTAL_DOLLARS}"""
 
+def codex_row1(label, pct, reset):
+    # pct already carries % suffix or a keyword; reset already has "resets " prefix or "".
+    if pct == "—" or label == "—":
+        return cell("")
+    return cell(f"{label} · {pct} used", reset)
+
+def codex_row2(label, pct, reset):
+    # pct is raw ("10", "n/a", "stale", "—"); reset is raw ("21 Jul", "n/a", ...).
+    if pct == "—" or label == "—":
+        return cell("")
+    if pct == "stale":
+        return cell(f"{label} · stale used", reset)
+    if pct == "n/a":
+        return cell(f"{label} · n/a used", "resets n/a")
+    return cell(f"{label} · {pct}% used", f"resets {reset}")
+
+def codex_bar(bar_str, pct):
+    if pct == "—":
+        return " " * w
+    return f"{bar_str}{' ' * max(1, w - len(bar_str))}"
+
 rows = [
     f"| {cell(f'**Claude Code** v{cver}')} | {cell(f'**Codex CLI** v{cxver}')} | {cell(f'**Cursor** v{cursor_ver}')} |",
     f"| {rule()} | {rule()} | {rule()} |",
     f"| {cell('Plan Usage')} | {cell('Plan Usage')} | {cell(cname)} |",
-    f"| {cell(f'Session · {c5_pct} used', f'resets {c5_reset}')} | {cell(f'{cx5_label} · {cx5_pct} used', cx5_reset)} | {cell(f'Auto · {auto_pct}')} |",
-    f"| {c5_bar}{' ' * max(1, w - len(c5_bar))} | {cx5_bar}{' ' * max(1, w - len(cx5_bar))} | {ca_bar}{' ' * max(1, w - len(ca_bar))} |",
+    f"| {cell(f'Session · {c5_pct} used', f'resets {c5_reset}')} | {codex_row1(cx5_label, cx5_pct, cx5_reset)} | {cell(f'Auto · {auto_pct}')} |",
+    f"| {c5_bar}{' ' * max(1, w - len(c5_bar))} | {codex_bar(cx5_bar, cx5_pct)} | {ca_bar}{' ' * max(1, w - len(ca_bar))} |",
     f"| {' ' * w} | {' ' * w} | {' ' * w} |",
-    f"| {cell(f'Weekly · {c7_pct} used', f'resets {c7_reset}')} | {cell(f'{cx7_label} · {cx7_pct}% used', f'resets {cx7_reset}')} | {cell(f'Premium · {prem_pct}')} |",
-    f"| {c7_bar}{' ' * max(1, w - len(c7_bar))} | {cx7_bar}{' ' * max(1, w - len(cx7_bar))} | {cp_bar}{' ' * max(1, w - len(cp_bar))} |",
+    f"| {cell(f'Weekly · {c7_pct} used', f'resets {c7_reset}')} | {codex_row2(cx7_label, cx7_pct, cx7_reset)} | {cell(f'Premium · {prem_pct}')} |",
+    f"| {c7_bar}{' ' * max(1, w - len(c7_bar))} | {codex_bar(cx7_bar, cx7_pct)} | {cp_bar}{' ' * max(1, w - len(cp_bar))} |",
 ]
 print("\n".join(rows))
 PYEOF
