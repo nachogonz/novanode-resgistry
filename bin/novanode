@@ -1345,10 +1345,14 @@ if has_chat:
     card_w = max(32, width - 2)
     card_left = 1
 else:
-    card_w = max(32, min(84, width - 8))
+    card_w = max(48, min(96, width - 6))
     card_left = max(0, (width - card_w) // 2)
 input_prefix_w = 4
 input_max_width = max(1, card_w - input_prefix_w - 2)
+
+INPUT_TOP_PAD = 1
+INPUT_BOTTOM_PAD = 1
+PROVIDER_GAP = 1
 
 def wrap_input(buf, cur):
     if not buf:
@@ -1363,10 +1367,11 @@ def wrap_input(buf, cur):
     return rows
 
 all_input_rows = wrap_input(input_buffer, input_cursor)
-max_input_h = max(1, min(6, height - 8))
+max_input_h = max(1, min(6, height - 8 - INPUT_TOP_PAD - INPUT_BOTTOM_PAD - PROVIDER_GAP))
 first_visible_input = max(0, len(all_input_rows) - max_input_h)
 input_rows_visible = all_input_rows[first_visible_input:]
 input_h = len(input_rows_visible)
+input_card_h = INPUT_TOP_PAD + input_h + INPUT_BOTTOM_PAD
 
 def status_row(left, right, limit):
     left = left or ""
@@ -1417,6 +1422,11 @@ provider_strip_rows = provider_rows()
 provider_h = len(provider_strip_rows)
 
 def input_card(start_row):
+    row = start_row
+    blank = fill("", card_w - 2)
+    for _ in range(INPUT_TOP_PAD):
+        put(row, " " * card_left + f"{ORANGE}▎{RESET}{blank}")
+        row += 1
     for idx, row_text in enumerate(input_rows_visible):
         prompt = f"{BOLD}{GREEN}›{RESET} " if idx == 0 and first_visible_input == 0 else "  "
         if not row_text and not input_buffer and idx == 0:
@@ -1426,11 +1436,16 @@ def input_card(start_row):
         content = f"{prompt}{display_text}"
         content = fill(content, card_w - 2)
         put(
-            start_row + idx,
-            " " * card_left + f"{ORANGE}▎{RESET}{GRAY_BG}{content}{RESET}",
+            row,
+            " " * card_left + f"{ORANGE}▎{RESET}{content}",
         )
+        row += 1
+    for _ in range(INPUT_BOTTOM_PAD):
+        put(row, " " * card_left + f"{ORANGE}▎{RESET}{blank}")
+        row += 1
+    row += PROVIDER_GAP
     for index, provider_strip in enumerate(provider_strip_rows):
-        put(start_row + input_h + index, " " * (card_left + 2) + provider_strip)
+        put(row + index, " " * (card_left + 2) + provider_strip)
 
 if not has_chat:
     hero = cached_hero_lines(min(38, max(20, width - 16)), 4)
@@ -1447,7 +1462,7 @@ if not has_chat:
     input_start_row = hero_start + len(hero) + 5
     input_card(input_start_row)
     tip = f"{ORANGE}● Tip{RESET}{DIM}  /claude  ·  /codex{RESET}"
-    put(input_start_row + input_h + provider_h + 3, center_line(tip))
+    put(input_start_row + input_card_h + PROVIDER_GAP + provider_h + 3, center_line(tip))
 else:
     title_left = f" {BOLD}{ORANGE}NovaNode{RESET}{DIM}  chat{RESET}"
     if selected:
@@ -1465,7 +1480,7 @@ else:
     put(0, status_row(title_left, title_right, width))
     put(1, f"{DIM}{'─' * width}{RESET}")
 
-    input_start_row = height - input_h - provider_h
+    input_start_row = height - input_card_h - PROVIDER_GAP - provider_h
     status_row_index = input_start_row - 1
     chat_start_row = 2
     chat_h = max(1, status_row_index - chat_start_row)
@@ -1499,7 +1514,7 @@ else:
         cursor_col = input_max_width
     else:
         cursor_row_visible = cursor_row_total - first_visible_input
-    cursor_screen_row = input_start_row + cursor_row_visible + 1
+    cursor_screen_row = input_start_row + INPUT_TOP_PAD + cursor_row_visible + 1
     cursor_screen_col = card_left + 4 + cursor_col
     sys.stdout.write(f"\033[{cursor_screen_row};{cursor_screen_col}H\033[?25h")
 
@@ -1543,7 +1558,98 @@ awaiting_model=0
 model_picker_provider=""
 model_picker_options=()
 CHAT_SCROLL_OFFSET=0
+
+__LOADER_PID=""
+
+start_novanode_loader() {
+  [ -t 1 ] || return 0
+  python3 - "$VERSION" << 'PYEOF' &
+import glob, os, re, sys, time, shutil, signal
+
+GREEN = "\033[38;5;82m"
+DIM = "\033[38;5;245m"
+BOLD = "\033[1m"
+WHITE = "\033[38;2;249;249;249m"
+RESET = "\033[0m"
+FRAMES = ["⠋","⠙","⠹","⠸","⠼","⠴","⠦","⠧","⠇","⠏"]
+
+def strip_ansi(s):
+    return re.sub(r"\033\[[0-9;]*m", "", s)
+
+def load_hero_lines():
+    base = os.path.expanduser("~/.cache/novanode")
+    try:
+        files = sorted(
+            glob.glob(os.path.join(base, "hero-v1-*.txt")),
+            key=lambda p: os.path.getmtime(p),
+            reverse=True,
+        )
+    except Exception:
+        files = []
+    for f in files:
+        try:
+            with open(f) as fh:
+                lines = fh.read().splitlines()
+            if lines:
+                return lines
+        except Exception:
+            continue
+    return [f"{BOLD}{WHITE}NovaNode{RESET}"]
+
+def center(text, cols):
+    vis = len(strip_ansi(text))
+    return " " * max(0, (cols - vis) // 2) + text
+
+def frame_bytes(hero, spinner_char, cols, rows):
+    hero_start = max(2, rows // 2 - 11)
+    subtitle = f"{DIM}AI terminal hub · Claude · Codex{RESET}"
+    spinner = f"{GREEN}{spinner_char}{RESET}  {DIM}Loading NovaNode…{RESET}"
+    buf = ["\033[?2026h\033[?25l\033[H\033[2J"]
+    for i, line in enumerate(hero):
+        buf.append(f"\033[{hero_start + i + 1};1H" + center(line, cols))
+    buf.append(f"\033[{hero_start + len(hero) + 2};1H" + center(subtitle, cols))
+    buf.append(f"\033[{hero_start + len(hero) + 6};1H" + center(spinner, cols))
+    buf.append("\033[?2026l")
+    return "".join(buf)
+
+def main():
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+    hero = load_hero_lines()
+    i = 0
+    while True:
+        try:
+            cols, rows = shutil.get_terminal_size((80, 24))
+        except Exception:
+            cols, rows = 80, 24
+        try:
+            sys.stdout.write(frame_bytes(hero, FRAMES[i % len(FRAMES)], cols, rows))
+            sys.stdout.flush()
+        except (BrokenPipeError, OSError):
+            return
+        time.sleep(0.08)
+        i += 1
+
+try:
+    main()
+except (KeyboardInterrupt, SystemExit):
+    pass
+PYEOF
+  __LOADER_PID=$!
+}
+
+stop_novanode_loader() {
+  if [ -n "${__LOADER_PID:-}" ]; then
+    kill "$__LOADER_PID" 2>/dev/null
+    wait "$__LOADER_PID" 2>/dev/null
+    __LOADER_PID=""
+  fi
+}
+
+if [ "${NOVANODE_PRELOADED_ALT:-0}" = "1" ]; then
+  start_novanode_loader
+fi
 usage_data="$(load_usage)"
+stop_novanode_loader
 choose_default_provider
 
 show_model_picker() {
@@ -1621,7 +1727,15 @@ enter_live_screen() {
     # Capture wheel/click events inside the alternate-screen environment. The
     # input state machine consumes the complete report and only wheel events
     # move chat history, so the host terminal never enters its own scrollback.
-    printf "\033[?1049h\033[?7l\033[?1000l\033[?1002l\033[?1003h\033[?1006h\033[?1007l\033[?2004l\033[H\033[2J\033[3J\033[?25h"
+    if [ "${NOVANODE_PRELOADED_ALT:-0}" = "1" ]; then
+      # nn-usage already switched to the alt-screen buffer and drew the loader
+      # frame. Skip \033[?1049h and the wipe so render_screen paints on top of
+      # the loader inside a single synchronized update — no flash.
+      printf "\033[?7l\033[?1000l\033[?1002l\033[?1003h\033[?1006h\033[?1007l\033[?2004l\033[?25l"
+      NOVANODE_PRELOADED_ALT=0
+    else
+      printf "\033[?1049h\033[?7l\033[?1000l\033[?1002l\033[?1003h\033[?1006h\033[?1007l\033[?2004l\033[H\033[2J\033[3J\033[?25h"
+    fi
   fi
 }
 

@@ -932,8 +932,8 @@ def fetch_session_usage():
                         reset_label = f"reset {reset_dt.astimezone().strftime('%H:%M')}"
                 except Exception:
                     reset_label = ""
-            token_detail = f"{compact_tokens(used)} / {compact_tokens(context)}"
-            detail = f"{reset_label} · {token_detail}" if reset_label else f"{token_detail} tokens"
+            token_detail = f"{compact_tokens(used)} used"
+            detail = f"{reset_label} · {token_detail}" if reset_label else token_detail
             return pct, detail
     return None
 
@@ -1702,18 +1702,18 @@ def number(value):
 def battery(label, value, footer):
     used = number(value)
     if used is None:
-        meter = "▱▱▱▱▱▱▱▱▱▱"
+        meter = "▯▯" * 6
         status = "n/a"
     else:
         left = max(0, 100 - used)
         if left <= 0:
             filled = 0
         elif left >= 100:
-            filled = 5
+            filled = 6
         else:
-            filled = max(1, min(4, int((left - 1e-9) // 25) + 1))
-        meter = "▰▰" * filled + "▱▱" * (5 - filled)
-        status = f"{left:g}% left"
+            filled = max(1, min(5, int(round(left / 100 * 6))))
+        meter = "▮▮" * filled + "▯▯" * (6 - filled)
+        status = f"{left:g}%"
     title = f"{label}"
     gauge = f"  {meter}  {status}"
     detail = f"  {footer}" if footer else ""
@@ -1733,7 +1733,7 @@ r2, r2_gauge, r2_detail = battery("Premium", prem_pct, cycle_end)
 rows = [
     f"| {cell(f'**Claude Code** v{cver}')} | {cell(f'**Codex CLI** v{cxver}')} | {cell(f'**Cursor** v{cursor_ver}')} |",
     f"| {rule()} | {rule()} | {rule()} |",
-    f"| {cell('Plan Usage')} | {cell('Plan Usage')} | {cell(cname)} |",
+    f"| {cell('Plan Usage')} | {cell('Plan Usage')} | {cell('Plan Usage')} |",
     f"| {c1} | {x1} | {r1} |",
     f"| {c1_gauge} | {x1_gauge} | {r1_gauge} |",
     f"| {c1_detail} | {x1_detail} | {r1_detail} |",
@@ -1754,12 +1754,12 @@ left = max(0, 100 - pct)
 if left <= 0:
     filled = 0
 elif left >= 100:
-    filled = 5
+    filled = 6
 else:
-    filled = max(1, min(4, int((left - 1e-9) // 25) + 1))
-meter = "▰▰" * filled + "▱▱" * (5 - filled)
+    filled = max(1, min(5, int(round(left / 100 * 6))))
+meter = "▮▮" * filled + "▯▯" * (6 - filled)
 print("All providers")
-print(f"{meter}  {left:g}% left · ${SUPER_SUM} combined")
+print(f"{meter}  {left:g}% · ${SUPER_SUM} combined")
 PYEOF
 )
 
@@ -1823,10 +1823,10 @@ for line in sys.stdin:
         raw = f"{DIM}{raw}{RESET}"
     else:
         raw = f"{GREEN}{raw}{RESET}"
-    if "▰" in raw or "▱" in raw:
+    if "▮" in raw or "▯" in raw:
         raw = f"{BOLD}{raw}{RESET}"
-    if "▱" in raw:
-        raw = raw.replace("▱", f"{DIM}▱{GREEN}")
+    if "▯" in raw:
+        raw = raw.replace("▯", f"{DIM}▯{GREEN}")
     vis = re.sub(r"\033\[[0-9;]*m", "", raw)
     if not vis.strip():
         print(raw)
@@ -1860,6 +1860,11 @@ if [ -t 0 ] && [ -t 1 ]; then
   printf '\r\033[2K'
   case "$action" in
     ""|c|C)
+      # Slide straight into the NovaNode alt-screen so the transition is
+      # continuous — no scroll, no flash. novanode picks this up and paints
+      # a spinner over the same buffer while it loads usage data.
+      printf '\033[?1049h\033[?25l\033[H\033[2J'
+      export NOVANODE_PRELOADED_ALT=1
       exec "${SCRIPT_DIR}/novanode"
       ;;
     *)
