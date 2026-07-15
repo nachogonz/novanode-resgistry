@@ -698,6 +698,8 @@ for line in raw.splitlines():
     if len(cols) < 11:
         continue
     key, command, version, p1, used1, left1, reset1, p2, used2, left2, reset2 = cols[:11]
+    if key == "cursor":
+        continue
     providers.append({
         "key": key,
         "command": command,
@@ -1238,7 +1240,7 @@ left_lines = (
 )
 right_lines = [
     f"{BOLD}{GREEN}Pick a provider. See usage first.{RESET}",
-    f"{DIM}/claude · /codex · /cursor · /open{RESET}",
+    f"{DIM}/claude · /codex · /open{RESET}",
     f"{DIM}/model <name> · /usage · /quit{RESET}",
     f"{GREEN}Approve edits with y/n when asked.{RESET}",
 ]
@@ -1439,12 +1441,12 @@ if not has_chat:
     for idx, line in enumerate(hero):
         put(hero_start + idx, center_line(line))
 
-    subtitle = f"{DIM}AI terminal hub · Claude · Codex · Cursor{RESET}"
+    subtitle = f"{DIM}AI terminal hub · Claude · Codex{RESET}"
     put(hero_start + len(hero) + 1, center_line(subtitle))
 
     input_start_row = hero_start + len(hero) + 5
     input_card(input_start_row)
-    tip = f"{ORANGE}● Tip{RESET}{DIM}  /claude  ·  /codex  ·  /cursor{RESET}"
+    tip = f"{ORANGE}● Tip{RESET}{DIM}  /claude  ·  /codex{RESET}"
     put(input_start_row + input_h + provider_h + 3, center_line(tip))
 else:
     title_left = f" {BOLD}{ORANGE}NovaNode{RESET}{DIM}  chat{RESET}"
