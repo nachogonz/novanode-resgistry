@@ -1796,6 +1796,7 @@ import os, sys, re
 
 TARGET = 2
 WIDTH = int(os.environ.get("LAYOUT", "96")) - 2
+COL_W = max(26, (int(os.environ.get("LAYOUT", "96")) - 2) // 3)
 GREEN = "\033[38;5;82m"
 ORANGE = "\033[38;5;208m"
 DIM = "\033[38;5;245m"
@@ -1812,6 +1813,18 @@ for line in sys.stdin:
     if not raw:
         print()
         continue
+    is_provider_header = raw.startswith("Claude Code")
+    if is_provider_header:
+        raw = raw.replace(" | ", "   ")
+    elif " | " in raw and not set(raw.replace("|", "").replace(" ", "")) <= {"-"}:
+        cells = raw.split(" | ")
+        if len(cells) == 3:
+            first_border = TARGET + COL_W + 2
+            second_border = first_border + COL_W + 3
+            raw = (
+                f"{cells[0]} \033[{first_border}G│ {cells[1]} "
+                f"\033[{second_border}G│ {cells[2]}"
+            )
     if raw == "TOTAL TOKENS":
         raw = f"{BOLD}{ORANGE}{raw}{RESET}"
     elif raw.startswith("Claude Code") or "| Codex CLI" in raw:
@@ -1827,12 +1840,12 @@ for line in sys.stdin:
         raw = f"{BOLD}{raw}{RESET}"
     if "▯" in raw:
         raw = raw.replace("▯", f"{DIM}▯{GREEN}")
-    vis = re.sub(r"\033\[[0-9;]*m", "", raw)
+    vis = re.sub(r"\033\[[0-9;]*[A-Za-z]", "", raw)
     if not vis.strip():
         print(raw)
         continue
     aligned = " " * TARGET + raw
-    vis_aligned = re.sub(r"\033\[[0-9;]*m", "", aligned)
+    vis_aligned = re.sub(r"\033\[[0-9;]*[A-Za-z]", "", aligned)
     if len(vis_aligned) < WIDTH:
         aligned = aligned + " " * (WIDTH - len(vis_aligned))
     print(aligned)
